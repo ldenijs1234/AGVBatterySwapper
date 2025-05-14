@@ -18,7 +18,7 @@ y = gamma.pdf(x, a=shape, scale=scale)
 
 # Plot
 plt.plot(x, y, label='Arrival Interval Distribution', color='red')
-plt.title("Distribution (Arrival Interval)")
+plt.title("Arrival Interval Distribution")
 plt.xlabel("Arrival Interval (days)")
 plt.ylabel("Probability Density")
 plt.grid(True)
