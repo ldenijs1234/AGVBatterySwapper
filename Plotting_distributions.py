@@ -1,25 +1,53 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import norm
+from scipy.stats import gamma
 
+#%% Plotting the arrival interval distribution
 # Parameters
 mean = 1
-min_val = 0
 max_val = 7
 
-# Estimate standard deviation assuming 99.7% in min max
-std_dev = (max_val - min_val) / 6
+# Gamma distribution: mean = shape * scale
+shape = 2  # Choose shape > 1 to ensure PDF(0) = 0
+scale = mean / shape  # Solve for scale
 
-x = np.linspace(min_val, max_val, 1000)
-y = norm.pdf(x, loc=mean, scale=std_dev)
+# Generate x values
+x = np.linspace(0, max_val, 1000)
+# Compute Gamma PDF
+y = gamma.pdf(x, a=shape, scale=scale)
 
-# Plotting
-plt.figure()
-plt.plot(x, y, label='Arrival interval normal distribution')
-plt.title('Arrival Interval Normal Distribution')
-plt.xlabel('Arrival Interval (days)')
-plt.ylabel('Probability Density')
-plt.grid()
+# Plot
+plt.plot(x, y, label='Arrival Interval Distribution', color='red')
+plt.title("Distribution (Arrival Interval)")
+plt.xlabel("Arrival Interval (days)")
+plt.ylabel("Probability Density")
+plt.grid(True)
 plt.legend()
 plt.show()
 
+#%% Plotting the amount of containers distribution
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import gamma
+# Parameters
+mean = 7065
+shape = 8
+scale = mean / shape
+max_val = 24000
+
+# Extend x range from 0 to max
+x = np.linspace(0, max_val, 1000)
+y = gamma.pdf(x, a=shape, scale=scale)
+
+# Plot
+plt.plot(x, y, label='Amount of containers Distribution', color='blue')
+plt.title("Amount of Containers Arriving Distribution")
+plt.xlabel("# of Containers arriving")
+plt.ylabel("Probability Density")
+plt.grid(True)
+plt.legend()
+plt.show()
+
+#%% Plotting the location distribution
+
+# It's a uniform distribution, so we no need to show it, its literally a flat line
