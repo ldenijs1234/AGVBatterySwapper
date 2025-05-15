@@ -48,6 +48,26 @@ plt.grid(True)
 plt.legend()
 plt.show()
 
-#%% Plotting the location distribution
+#%% Plotting the deadline normal distribution, to measure performance
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import gamma
+# Parameters
+mean = 3000
+shape = 25
+scale = mean / shape
+max_val = 7000
 
-# It's a uniform distribution, so we no need to show it, its literally a flat line
+# Extend x range from 0 to max
+x = np.linspace(1400, max_val, 1000)
+y = gamma.pdf(x, a=shape, scale=scale)
+
+# Plot
+plt.plot(x, y, label='Deadline Distribution', color='green')
+plt.title("Deadline Distribution")
+plt.xlabel("Deadline (minutes)")
+plt.ylabel("Probability Density")
+plt.grid(True)
+plt.legend()
+plt.show()
+
