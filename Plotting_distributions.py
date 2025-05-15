@@ -8,11 +8,11 @@ mean = 1
 max_val = 7
 
 # Gamma distribution: mean = shape * scale
-shape = 2  # Choose shape > 1 to ensure PDF(0) = 0
+shape = 3  # Choose shape > 1 to ensure PDF(0) = 0
 scale = mean / shape  # Solve for scale
 
 # Generate x values
-x = np.linspace(0, max_val, 1000)
+x = np.linspace(1, max_val, 1000)
 # Compute Gamma PDF
 y = gamma.pdf(x, a=shape, scale=scale)
 
