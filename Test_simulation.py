@@ -14,7 +14,7 @@ AGV_SPEED = AGV_SPEED_KMPH * 1000 / 3600  # m/s
 SWAPPING_TIME = sim.Uniform(240, 300)
 LOADING_TIME = sim.Uniform(15, 30)
 UNLOADING_TIME = sim.Uniform(15, 30)
-SIM_TIME = 7 * 24 * 60 * 60  # seconds in 1 day
+SIM_TIME = 24 * 60 * 60  # seconds in 1 day
 
 # === BATTERY COMPONENT (passive) ===
 class Battery(sim.Component):
