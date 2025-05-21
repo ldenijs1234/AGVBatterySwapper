@@ -3,6 +3,10 @@ import random
 
 sim.yieldless(False)
 
+
+# === INITIALIZATION ===
+env = sim.Environment(trace=False)
+
 # === CONFIGURATION ===
 USE_SWAPPING = True  # Toggle between swapping and charging
 
@@ -16,7 +20,11 @@ LOADING_TIME = sim.Uniform(15, 30)
 UNLOADING_TIME = sim.Uniform(15, 30)
 SIM_TIME = 24 * 60 * 60  # seconds in 1 day
 
-# === BATTERY COMPONENT (passive) ===
+# === MONITORS ===
+battery_soc_monitor = sim.Monitor("Battery SOC")
+battery_queue_monitor = sim.Monitor("Battery Queue Length")
+
+# === BATTERY COMPONENT ===
 class Battery(sim.Component):
     def setup(self, soc=100):
         self.soc = soc
@@ -52,7 +60,8 @@ class SwappingStation(sim.Component):
                 agv = self.queue.pop()
                 old_battery = agv.battery
                 ChargerBattery.queue.append(old_battery)
-                ChargerBattery.activate()
+                if ChargerBattery.ispassive():
+                    ChargerBattery.activate()
                 yield self.hold(SWAPPING_TIME.sample())
                 new_battery = BatteryQueue.pop()
                 agv.battery = new_battery
@@ -89,6 +98,8 @@ class AGV(sim.Component):
             yield self.hold(UNLOADING_TIME.sample())
 
             self.battery.soc -= random.uniform(5, 15)
+            battery_soc_monitor.tally(self.battery.soc)
+
             if self.battery.soc < 20:
                 self.selected_for_charging = True
 
@@ -96,12 +107,14 @@ class AGV(sim.Component):
                 if USE_SWAPPING:
                     if self not in Swapper.queue:
                         Swapper.queue.append(self)
-                        Swapper.activate()
+                        if Swapper.ispassive():
+                            Swapper.activate()
                         self.passivate()
                 else:
                     if self not in Charger.queue:
                         Charger.queue.append(self)
-                        Charger.activate()
+                        if Charger.ispassive():
+                            Charger.activate()
                         self.passivate()
 
 class ContainerGenerator(sim.Component):
@@ -111,27 +124,39 @@ class ContainerGenerator(sim.Component):
             agv = AGV()
             agv.activate()
 
+# === PARAMETRIC REPORTING COMPONENT ===
+class MonitorReporter(sim.Component):
+    def process(self):
+        while True:
+            yield self.hold(300)  # every 5 minutes
+            battery_queue_monitor.tally(len(BatteryQueue))
+            print(f"Time: {env.now():.0f}s")
+            print(f"BatteryQueue Length: {len(BatteryQueue)}")
+            print(f"Charging Queue Length: {len(Charger.queue)}")
+            print(f"Swapping Queue Length: {len(Swapper.queue)}")
+            print(f"Average Battery SOC: {battery_soc_monitor.mean():.2f}%")
+            print("-" * 40)
+
 # === INITIALIZATION ===
 env = sim.Environment(trace=False)
 BatteryQueue = sim.Queue("AvailableBatteries")
 
-# Components
 Charger = ChargingStation()
 Swapper = SwappingStation()
 ChargerBattery = ChargerBatteryComponent()
 
-# Add batteries to pool
 for _ in range(10):
     BatteryQueue.append(Battery(soc=80))
 
 ContainerGenerator()
+MonitorReporter()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
 
-# === OUTPUT ===
+# === FINAL OUTPUT ===
 print("Simulation complete.")
-print(f"Battery Queue Length: {len(BatteryQueue)}")
+print(f"Final Battery Queue Length: {len(BatteryQueue)}")
 print(f"Charging Queue (AGVs): {len(Charger.queue)}")
 print(f"Swapping Queue (AGVs): {len(Swapper.queue)}")
-print('testing maatje')
+print(f"Final Average SOC: {battery_soc_monitor.mean():.2f}%")
