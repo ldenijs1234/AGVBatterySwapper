@@ -153,12 +153,27 @@ class AGV(sim.Component):
 class ContainerGenerator(sim.Component):
     def process(self):
         while True:
-            yield self.hold(sim.Exponential(30).sample())
-            container = Container()
-            ContainerQueue.append(container)
-            if AGVQueue:
-                agv = AGVQueue.pop()
-                agv.activate()
+            # Gamma-distributed time between container batch arrivals (simulate vessel arrival)
+            yield self.hold(random.gammavariate(2, 3600))  # e.g., 2-hour average between ships
+
+            # === Batch size based on Gamma(shape=8, scale=883.125), capped at 24000 ===
+            mean = 7065
+            shape = 8
+            scale = mean / shape
+            max_val = 24000
+
+            batch_size = min(int(random.gammavariate(shape, scale)), max_val)
+
+            print(f"\n--- New batch of {batch_size} containers at {env.now():.0f}s ---")
+
+            for _ in range(batch_size):
+                container = Container()
+                ContainerQueue.append(container)
+
+                # Wake up an AGV if any are idle
+                if AGVQueue:
+                    agv = AGVQueue.pop()
+                    agv.activate()
 
 class MonitorReporter(sim.Component):
     def process(self):
