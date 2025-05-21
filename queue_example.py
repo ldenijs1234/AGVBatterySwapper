@@ -27,7 +27,7 @@ class TOrderGenerator (sim.Component):
         with sim.ItemFile(self.FileName) as f:
             while True:
                 NextTime = f.read_item_float ()             # each line in inputfile starts with a time
-                yield self.hold (till=NextTime)             # wait until next order arrives
+                yield self.hold(till=NextTime)              # wait until next order arrives
                 Nr   = f.read_item_int ()                   # read order number
                 ClNr = f.read_item_int ()                   # read client number
                 NrP  = f.read_item_int ()                   # read number of products in order
