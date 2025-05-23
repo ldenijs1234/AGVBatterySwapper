@@ -27,7 +27,7 @@ env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
-USE_SOC_WINDOW = True
+USE_SOC_WINDOW = False
 TEST_MODE = True
 
 # === PARAMETERS ===
@@ -39,13 +39,26 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 24 * 60 * 60 if TEST_MODE else 24 * 60 * 60
-SOC_MIN = 20
+SIM_TIME = 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 1 day or 30 days
+SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
+DEGRADATION_PROFILE = [
+    ((5, 15), 0.15),    # 15% capacity loss at 1200 cycles
+    ((15, 25), 0.125),  # 12.5% capacity loss
+    ((25, 35), 0.09),   # 9% capacity loss
+    ((35, 45), 0.06),   # 6% capacity loss
+    ((45, 55), 0.05),   # 5% capacity loss
+    ((55, 65), 0.08),   # 8% capacity loss
+    ((65, 75), 0.09),   # 9% capacity loss
+    ((75, 85), 0.09),   # 9% capacity loss
+    ((85, 95), 0.095),  # 9.5% capacity loss
+]
 
 # === MONITORS ===
 battery_soc_monitor = sim.Monitor("Battery SOC")
 battery_soh_monitor = sim.Monitor("Battery SOH")
+battery_usage_monitor = sim.Monitor("Battery Usage Count")
+battery_charge_cycles_monitor = sim.Monitor("Battery Charge Cycles")
 
 battery_queue_monitor = sim.Monitor("Battery Queue Length")
 container_queue_monitor = sim.Monitor("Container Queue Length")
@@ -61,43 +74,89 @@ distance_monitor = sim.Monitor("Distance Traveled")
 
 # === QUEUES ===
 BatteryQueue = sim.Queue("AvailableBatteries")
-BatteryQueue.animate(x=100, y=300)
+#BatteryQueue.animate(x=100, y=300)
 
 ContainerQueue = sim.Queue("ContainerQueue")
-ContainerQueue.animate(x=300, y=300)
+#ContainerQueue.animate(x=300, y=300)
 
 SwappingQueue = sim.Queue("SwappingQueue")
-SwappingQueue.animate(x=500, y=300)
+#SwappingQueue.animate(x=500, y=300)
 
 ChargingQueue = sim.Queue("ChargingQueue")
-ChargingQueue.animate(x=700, y=300)
+#ChargingQueue.animate(x=700, y=300)
 
 AGVQueue = sim.Queue("IdleAGVs")
-AGVQueue.animate(x=900, y=300)
+#AGVQueue.animate(x=900, y=300)
 
 # === COMPONENT CLASSES ===
 class Battery(sim.Component):
     def setup(self, soc=100):
-        self.capacity = BATTERY_CAPACITY
-        self.energy = soc / 100 * BATTERY_CAPACITY
-        self.soh = 100
-
+        self.initial_capacity = BATTERY_CAPACITY
+        self.capacity = self.initial_capacity
+        self.energy = soc / 100 * self.capacity
+        self.soh = 100  # State of Health (percentage of initial capacity)
+        self.charge_cycles = 0
+        self.usage_count = 0
+        self.total_energy_delivered = 0
+        self.soc_history = []  # Track SOC at each charge cycle
+        
+        # Track cycles in each SOC range for degradation calculation
+        self.cycles_in_range = {f"{low}-{high}%": 0 
+                              for (low, high), _ in DEGRADATION_PROFILE}
+    
     def soc(self):
         return (self.energy / self.capacity) * 100
     
+    def calculate_degradation(self, start_soc, end_soc):
+        """Calculate degradation based on SOC range used during charging"""
+        # Find which ranges this charge cycle passed through
+        ranges_used = []
+        for (low, high), _ in DEGRADATION_PROFILE:
+            if start_soc <= high and end_soc >= low:
+                ranges_used.append((low, high))
+        
+        # Apply degradation proportionally for each range
+        for (low, high) in ranges_used:
+            range_key = f"{low}-{high}%"
+            self.cycles_in_range[range_key] += 1
+            
+            # Find the degradation rate for this range
+            degradation_rate = next(d for (l,h), d in DEGRADATION_PROFILE 
+                                  if l == low and h == high)
+            
+            # Apply degradation (per cycle, scaled to 1200 cycles)
+            capacity_loss = (degradation_rate / 1200) * self.initial_capacity
+            self.capacity -= capacity_loss
+            self.capacity = max(self.capacity, 0.1 * self.initial_capacity)  # Never below 10%
+            
+        # Update SOH
+        self.soh = (self.capacity / self.initial_capacity) * 100
+        battery_soh_monitor.tally(self.soh)
+    
     def process(self):
         while True:
-            yield self.passivate()  # Wait for ChargingStation to reactivate us
-            # self.animate("🔋")
-            start = self.env.now()
-            duration = max(0, (SOC_MAX - self.soc()) * BATTERY_CAPACITY / CHARGING_RATE * 3600)
-
-            yield self.hold(duration)
-
-            self.energy = SOC_MAX / 100 * BATTERY_CAPACITY
+            yield self.passivate()  # Wait in BatteryQueue
+            
+            # Store initial SOC before charging
+            start_soc = self.soc()
+            start_charge = self.env.now()  # Track when charging starts
+            
+            # Charging process
+            self.charge_cycles += 1
+            energy_needed = (SOC_MAX/100 * self.capacity) - self.energy
+            if energy_needed > 0:
+                charging_time = (energy_needed / CHARGING_RATE) * 3600
+                yield self.hold(charging_time)
+                self.energy = SOC_MAX/100 * self.capacity
+            
+            # Calculate degradation based on SOC range
+            self.calculate_degradation(start_soc, SOC_MAX)
+            
+            # Record statistics
+            charging_time_monitor.tally(self.env.now() - start_charge)
             battery_soc_monitor.tally(self.soc())
-            charging_time_monitor.tally(self.env.now() - start)
-
+            battery_charge_cycles_monitor.tally(self.charge_cycles)
+            
             BatteryQueue.add(self)
 
        
@@ -152,6 +211,7 @@ class AGV(sim.Component):
                     yield self.passivate()
 
                 self.battery = BatteryQueue.pop()
+                self.battery.usage_count += 1
                 yield self.hold(SWAPPING_TIME)
 
             # Move to container pickup
@@ -183,6 +243,7 @@ class AGV(sim.Component):
             energy_used = POWER_CONSUMPTION / 1000 * travel_distance # kW/m * m = kWh 
             self.battery.energy -= energy_used
             self.battery.energy = max(0, self.battery.energy)
+            self.battery.total_energy_delivered += energy_used
             battery_soc_monitor.tally(self.battery.soc())
 
             # Move to delivery point (animation)
@@ -236,16 +297,19 @@ class ChargingStation(sim.Component):
         while True:
             if len(ChargingQueue) > 0:
                 battery = ChargingQueue.pop()
-                battery.activate()
-
-            yield self.hold(1)
+                battery.activate()  # This will resume the battery's process
+                yield self.hold(0)  # Allow immediate processing
+            else:
+                yield self.hold(1)  # Check again later
 
 class QueueLengthMonitor(sim.Component):
     def process(self):
         while True:
+            # Update monitors
             battery_queue_monitor.tally(len(BatteryQueue))
             container_queue_monitor.tally(len(ContainerQueue))
             AGV_queue_monitor.tally(len(AGVQueue))
+            
             yield self.hold(60)  # record every 60 seconds
 
 
@@ -253,18 +317,20 @@ class QueueLengthMonitor(sim.Component):
 NUM_AGVS = 24
 NUM_BATTERIES = 30
 
+# create AGVs and batteries list
+agvs = []
+batteries = []
+
 # Start all batteries fully charged
 for _ in range(NUM_BATTERIES):
-    BatteryQueue.add(Battery(soc=100))  # No .activate() needed
-
-agvs = []
+    battery = Battery(soc=100)  # Start fully charged
+    batteries.append(battery)
+    BatteryQueue.add(battery)  # Add to available batteries queue
 
 for _ in range(NUM_AGVS):
     agv = AGV()
     agv.activate()
     agvs.append(agv)
-
-
 
 ContainerGenerator().activate()
 SwapperStation().activate()
@@ -281,6 +347,27 @@ for agv in agvs:
     container_monitor.tally(agv.containers_handled)
     distance_monitor.tally(agv.distance_traveled)
 
+print("\n=== BATTERY STATISTICS ===")
+for i, battery in enumerate(batteries):
+    print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
+          f"Usage count: {battery.usage_count}, "
+          f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
+          f"Current SOC: {battery.soc():.1f}%")
+
+if batteries:  # Only print averages if we have batteries
+    print("\n=== AVERAGE BATTERY STATS ===")
+    print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
+    print(f"Avg usage count: {sum(b.usage_count for b in batteries)/len(batteries):.1f}")
+    print(f"Total energy delivered: {sum(b.total_energy_delivered for b in batteries):.1f} kWh")
+    print(f"Avg SOC across batteries: {battery_soc_monitor.mean():.1f}%")
+else:
+    print("No batteries found in the simulation")
+
+print("\n=== AVERAGE AGV STATS ===")
+print(f"Avg Charges per AGV: {charge_monitor.mean():.2f}")
+print(f"Avg Containers per AGV: {container_monitor.mean():.2f}")
+print(f"Avg Distance per AGV: {distance_monitor.mean()/1000:.2f} km")
+
 # === FINAL OUTPUT ===
 def print_results():
     print("\n=== SIMULATION RESULTS ===")
@@ -292,10 +379,7 @@ def print_results():
     print(f"Battery Queue - avg length: {battery_queue_monitor.mean():.2f}")
     print(f"Container Queue - avg length: {container_queue_monitor.mean():.2f}")
     print(f"AGV Queue - avg length: {AGV_queue_monitor.mean():.2f}")
-    print("\n=== AVERAGE AGV STATS ===")
-    print(f"Avg Charges per AGV: {charge_monitor.mean():.2f}")
-    print(f"Avg Containers per AGV: {container_monitor.mean():.2f}")
-    print(f"Avg Distance per AGV: {distance_monitor.mean()/1000:.2f} km")
+    
 
 print_results()
 
