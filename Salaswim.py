@@ -1,33 +1,33 @@
 import salabim as sim
 import random
+import sys
 
 sim.yieldless(False)
 
+class TextLoadingBar:
+    def __init__(self, total_steps, description="Progress"):
+        self.total = total_steps
+        self.current = 0
+        self.description = description
+    
+    def update(self, increment=1):
+        self.current += increment
+        progress = min(self.current / self.total, 1)
+        bar_length = 50
+        filled = int(bar_length * progress)
+        bar = '[' + '=' * filled + ' ' * (bar_length - filled) + ']'
+        sys.stdout.write(f"\r{self.description}: {bar} {progress:.1%}")
+        sys.stdout.flush()
+    
+    def complete(self):
+        print()  # New line when done
+
 # === SIMULATION ENVIRONMENT ===
 env = sim.Environment(trace=False, random_seed=42)
-# env.animate(True)
-
-# Coordinates for animation
-# SPAWN_X, SPAWN_Y = 0, 0
-# BATTERY_STATION_X, BATTERY_STATION_Y = 100, 0
-# CHARGING_STATION_X, CHARGING_STATION_Y = 200, 0
-# CONTAINER_PICKUP_X, CONTAINER_PICKUP_Y = 0, 100
-# CONTAINER_DELIVERY_X, CONTAINER_DELIVERY_Y = 200, 100
-
-# sim.AnimateRectangle(
-#     spec=(300, 150),
-#     x=0, y=0,
-#     fillcolor='lightgray',
-#     layer=-2
-# )
-# sim.AnimateText(text="Battery Station", x=BATTERY_STATION_X, y=BATTERY_STATION_Y + 10, fontsize=10, textcolor='black')
-# sim.AnimateText(text="Charging", x=CHARGING_STATION_X, y=CHARGING_STATION_Y + 10, fontsize=10, textcolor='black')
-# sim.AnimateText(text="Pickup", x=CONTAINER_PICKUP_X, y=CONTAINER_PICKUP_Y + 10, fontsize=10, textcolor='black')
-# sim.AnimateText(text="Delivery", x=CONTAINER_DELIVERY_X, y=CONTAINER_DELIVERY_Y + 10, fontsize=10, textcolor='black')
 
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
-USE_SOC_WINDOW = False
+USE_SOC_WINDOW = True
 TEST_MODE = True
 
 # === PARAMETERS ===
@@ -43,7 +43,7 @@ SIM_TIME = 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 1 day or 30 days
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 DEGRADATION_PROFILE = [
-    ((5, 15), 0.15),    # 15% capacity loss at 1200 cycles
+    ((0, 15), 0.15),    # 15% capacity loss at 1200 cycles
     ((15, 25), 0.125),  # 12.5% capacity loss
     ((25, 35), 0.09),   # 9% capacity loss
     ((35, 45), 0.06),   # 6% capacity loss
@@ -51,8 +51,14 @@ DEGRADATION_PROFILE = [
     ((55, 65), 0.08),   # 8% capacity loss
     ((65, 75), 0.09),   # 9% capacity loss
     ((75, 85), 0.09),   # 9% capacity loss
-    ((85, 95), 0.095),  # 9.5% capacity loss
+    ((85, 100), 0.095),  # 9.5% capacity loss
 ]
+# Coordinates in meters
+SWAPPING_STATION = (0, 0)
+CONTAINER_PICKUP_X = 340
+CONTAINER_PICKUP_RANGE = range(290, 1491, 100)  # 290m to 1490m in 100m steps (12 points)
+
+loading_bar = TextLoadingBar(total_steps=SIM_TIME, description="Simulation Progress")
 
 # === MONITORS ===
 battery_soc_monitor = sim.Monitor("Battery SOC")
@@ -70,23 +76,14 @@ agv_idle_time_monitor = sim.Monitor("AGV Idle Time")
 charge_monitor = sim.Monitor("AGV Charges")
 container_monitor = sim.Monitor("Containers Delivered")
 distance_monitor = sim.Monitor("Distance Traveled")
-
+travel_time_monitor = sim.Monitor("Travel Time")
 
 # === QUEUES ===
 BatteryQueue = sim.Queue("AvailableBatteries")
-#BatteryQueue.animate(x=100, y=300)
-
 ContainerQueue = sim.Queue("ContainerQueue")
-#ContainerQueue.animate(x=300, y=300)
-
 SwappingQueue = sim.Queue("SwappingQueue")
-#SwappingQueue.animate(x=500, y=300)
-
 ChargingQueue = sim.Queue("ChargingQueue")
-#ChargingQueue.animate(x=700, y=300)
-
 AGVQueue = sim.Queue("IdleAGVs")
-#AGVQueue.animate(x=900, y=300)
 
 # === COMPONENT CLASSES ===
 class Battery(sim.Component):
@@ -159,51 +156,41 @@ class Battery(sim.Component):
             
             BatteryQueue.add(self)
 
-       
-    # def charge(self):
-    #     start = self.env.now()
-    #     duration = max(0, (SOC_MAX - self.soc()) * self.capacity / CHARGING_RATE * 3600)
-    #     yield self.hold(duration)
-    #     self.energy = SOC_MAX / 100 * self.capacity
-    #     charging_time_monitor.tally(self.env.now() - start)
-    #     battery_soc_monitor.tally(self.soc())
-    #     BatteryQueue.add(self)
-
-
-
 class AGV(sim.Component):
     def setup(self):
         self.battery = None
-        self.distance_traveled = 0  # optional tracking
+        self.location = SWAPPING_STATION  # Start at swapping station
+        self.distance_traveled = 0
         self.charge_count = 0
         self.containers_handled = 0
-        # self.location = (SPAWN_X, SPAWN_Y)
-        # sim.AnimateCircle(
-        #     radius=5,
-        #     x=SPAWN_X,
-        #     y=SPAWN_Y,
-        #     fillcolor='blue',
-        #     text=self.name(),
-        #     fontsize=8,
-        #     object=self
-        # )
 
-
-    def move_to(self, x, y, duration=1):
-        # self.animate(to_x=x, to_y=y, duration=duration)
-        yield self.hold(duration)
-        self.location = (x, y)
+    def calculate_distance(self, from_loc, to_loc):
+        """Calculate Euclidean distance between two points"""
+        return ((to_loc[0]-from_loc[0])**2 + (to_loc[1]-from_loc[1])**2)**0.5
+    
+    def travel_to(self, destination):
+        """Travel to destination and update statistics"""
+        distance = self.calculate_distance(self.location, destination)
+        travel_time = distance / AGV_SPEED
+        
+        self.distance_traveled += distance
+        energy_used = POWER_CONSUMPTION / 1000 * distance # kW/m * m = kWh 
+        self.battery.energy -= energy_used
+        self.battery.energy = max(0, self.battery.energy)
+        self.battery.total_energy_delivered += energy_used
+        battery_soc_monitor.tally(self.battery.soc())
+        self.location = destination
+        
+        yield self.hold(travel_time)  # Simulate travel time
+        distance_monitor.tally(distance)
+        travel_time_monitor.tally(travel_time)
 
     def process(self):
-        # self.animate("🚗", x=200, y=random.randint(100, 200), direction="right")
         while True:
             # Battery swap only if needed
             while self.battery is None:
                 SwappingQueue.add(self)
                 yield self.passivate()
-
-                # Move to battery station (for animation)
-                # yield from self.move_to(BATTERY_STATION_X, BATTERY_STATION_Y, duration=3)
 
                 # Get a battery
                 while len(BatteryQueue) == 0:
@@ -214,8 +201,10 @@ class AGV(sim.Component):
                 self.battery.usage_count += 1
                 yield self.hold(SWAPPING_TIME)
 
-            # Move to container pickup
-            # yield from self.move_to(CONTAINER_PICKUP_X, CONTAINER_PICKUP_Y, duration=3)
+            # Travel to random container pickup location
+            pickup_y = random.choice(CONTAINER_PICKUP_RANGE)
+            pickup_point = (CONTAINER_PICKUP_X, pickup_y)
+            yield from self.travel_to(pickup_point)
 
             # Get a container
             if len(ContainerQueue) == 0:
@@ -238,30 +227,32 @@ class AGV(sim.Component):
             yield self.hold(LOADING_TIME)
 
             # Drive
-            travel_distance = random.uniform(1000, 5000) # in meters 
-            self.distance_traveled += travel_distance
-            energy_used = POWER_CONSUMPTION / 1000 * travel_distance # kW/m * m = kWh 
-            self.battery.energy -= energy_used
-            self.battery.energy = max(0, self.battery.energy)
-            self.battery.total_energy_delivered += energy_used
-            battery_soc_monitor.tally(self.battery.soc())
+            delivery_point = (
+                random.uniform(300, 1300),  # X coordinate (300-1300m)
+                random.uniform(250, 1000)   # Y coordinate (250-1000m)
+            )
+            
+            # Travel to delivery point using travel_to()
+            yield from self.travel_to(delivery_point)
 
-            # Move to delivery point (animation)
-            # yield from self.move_to(CONTAINER_DELIVERY_X, CONTAINER_DELIVERY_Y, duration=travel_distance / AGV_SPEED) 
-            yield self.hold(travel_distance / AGV_SPEED)
             yield self.hold(UNLOADING_TIME)
 
             self.containers_handled += 1
             delivery_duration = self.env.now() - pickup_time
             container_delivery_time_monitor.tally(delivery_duration / 60) # Convert to minutes 
 
-            # Battery check
-            if self.battery.soc() < SOC_MIN:
+            # Battery check - if low, go directly to swapping station
+            if self.battery and self.battery.soc() < SOC_MIN:
                 self.charge_count += 1
-                # Move to charging station (animation)
-                # yield from self.move_to(CHARGING_STATION_X, CHARGING_STATION_Y, duration=3)
+                # Travel to swapping station if not already there
+                if self.location != SWAPPING_STATION:
+                    yield from self.travel_to(SWAPPING_STATION)
+                # Swap battery
                 ChargingQueue.add(self.battery)
                 self.battery = None
+            else:
+                # Return to pickup area if battery is okay
+                yield from self.travel_to((CONTAINER_PICKUP_X, random.choice(CONTAINER_PICKUP_RANGE)))
 
             # Repeat
             continue
@@ -309,9 +300,11 @@ class QueueLengthMonitor(sim.Component):
             battery_queue_monitor.tally(len(BatteryQueue))
             container_queue_monitor.tally(len(ContainerQueue))
             AGV_queue_monitor.tally(len(AGVQueue))
-            
-            yield self.hold(60)  # record every 60 seconds
 
+            # Update loading bar every minute
+            loading_bar.update(60)
+
+            yield self.hold(60)  # record every 60 seconds
 
 # === ENV SETUP ===
 NUM_AGVS = 24
@@ -339,6 +332,8 @@ QueueLengthMonitor().activate()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
+
+loading_bar.complete()
 
 print("\n=== AGV STATISTICS ===")
 for agv in agvs:
