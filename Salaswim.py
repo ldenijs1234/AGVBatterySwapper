@@ -73,7 +73,7 @@ charging_time_monitor = sim.Monitor("Battery Charging Time")
 container_delivery_time_monitor = sim.Monitor("Container Delivery Time")
 agv_idle_time_monitor = sim.Monitor("AGV Idle Time")
 
-charge_monitor = sim.Monitor("AGV Charges")
+swap_monitor = sim.Monitor("AGV Swaps")
 container_monitor = sim.Monitor("Containers Delivered")
 distance_monitor = sim.Monitor("Distance Traveled")
 travel_time_monitor = sim.Monitor("Travel Time")
@@ -161,7 +161,7 @@ class AGV(sim.Component):
         self.battery = None
         self.location = SWAPPING_STATION  # Start at swapping station
         self.distance_traveled = 0
-        self.charge_count = 0
+        self.swap_count = 0
         self.containers_handled = 0
 
     def calculate_distance(self, from_loc, to_loc):
@@ -243,7 +243,7 @@ class AGV(sim.Component):
 
             # Battery check - if low, go directly to swapping station
             if self.battery and self.battery.soc() < SOC_MIN:
-                self.charge_count += 1
+                self.swap_count += 1
                 # Travel to swapping station if not already there
                 if self.location != SWAPPING_STATION:
                     yield from self.travel_to(SWAPPING_STATION)
@@ -337,8 +337,8 @@ loading_bar.complete()
 
 print("\n=== AGV STATISTICS ===")
 for agv in agvs:
-    print(f"{agv.name()} - Charges: {agv.charge_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
-    charge_monitor.tally(agv.charge_count)
+    print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
+    swap_monitor.tally(agv.swap_count)
     container_monitor.tally(agv.containers_handled)
     distance_monitor.tally(agv.distance_traveled)
 
@@ -359,7 +359,7 @@ else:
     print("No batteries found in the simulation")
 
 print("\n=== AVERAGE AGV STATS ===")
-print(f"Avg Charges per AGV: {charge_monitor.mean():.2f}")
+print(f"Avg Swaps per AGV: {swap_monitor.mean():.2f}")
 print(f"Avg Containers per AGV: {container_monitor.mean():.2f}")
 print(f"Avg Distance per AGV: {distance_monitor.mean()/1000:.2f} km")
 
