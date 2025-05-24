@@ -9,16 +9,24 @@ class TextLoadingBar:
         self.total = total_steps
         self.current = 0
         self.description = description
-    
+        self.start_time = None
+
     def update(self, increment=1):
+        import time
+        if self.start_time is None:
+            self.start_time = time.time()
         self.current += increment
         progress = min(self.current / self.total, 1)
         bar_length = 50
         filled = int(bar_length * progress)
         bar = '[' + '=' * filled + ' ' * (bar_length - filled) + ']'
-        sys.stdout.write(f"\r{self.description}: {bar} {progress:.1%}")
+        elapsed = time.time() - self.start_time
+        mins, secs = divmod(int(elapsed), 60)
+        hours, mins = divmod(mins, 60)
+        time_str = f"{hours:02d}:{mins:02d}:{secs:02d}"
+        sys.stdout.write(f"\r{self.description}: {bar} {progress:.1%} | Elapsed: {time_str}")
         sys.stdout.flush()
-    
+
     def complete(self):
         print()  # New line when done
 
@@ -28,7 +36,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = False
+TEST_MODE = True
 
 # === PARAMETERS ===
 CHARGING_RATE = 300  # kW
@@ -39,7 +47,7 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 * 365 # 1 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 1 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 DEGRADATION_PROFILE = [
