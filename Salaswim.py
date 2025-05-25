@@ -271,8 +271,16 @@ class Container(sim.Component):
 
 class ContainerGenerator(sim.Component):
     def process(self):
+        shape = 8
+        scale = 7065 / shape  # = 883.125
+
         while True:
-            ContainerQueue.add(Container())  # simple container stand-in
+            # Draw the number of containers from the gamma distribution
+            num_containers = max(1, int(random.gammavariate(shape, scale)))
+
+            for _ in range(num_containers):
+                ContainerQueue.add(Container())
+
             container_queue_monitor.tally(len(ContainerQueue))
 
             # Reactivate an AGV if available
@@ -280,7 +288,7 @@ class ContainerGenerator(sim.Component):
                 agv = AGVQueue.pop()
                 agv.activate()
 
-            yield self.hold(random.expovariate(1/60))  # 1 container per minute
+            yield self.hold(random.expovariate(1 / 60))  # Still every minute on average
 
 class SwapperStation(sim.Component):
     def process(self):
