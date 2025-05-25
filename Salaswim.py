@@ -271,24 +271,33 @@ class Container(sim.Component):
 
 class ContainerGenerator(sim.Component):
     def process(self):
-        shape = 8
-        scale = 7065 / shape  # = 883.125
+        # Container count distribution
+        count_shape = 8
+        count_scale = 7065 / count_shape  # = 883.125
+
+        # Arrival interval distribution (in days)
+        interval_shape = 3
+        interval_scale = 1 / interval_shape  # ≈ 0.333...
 
         while True:
-            # Draw the number of containers from the gamma distribution
-            num_containers = max(1, int(random.gammavariate(shape, scale)))
+            # Generate number of containers from gamma distribution
+            num_containers = max(1, int(random.gammavariate(count_shape, count_scale)))
 
             for _ in range(num_containers):
                 ContainerQueue.add(Container())
 
             container_queue_monitor.tally(len(ContainerQueue))
 
-            # Reactivate an AGV if available
+            # Reactivate AGV if available
             if len(AGVQueue) > 0:
                 agv = AGVQueue.pop()
                 agv.activate()
 
-            yield self.hold(random.expovariate(1 / 60))  # Still every minute on average
+            # Determine arrival interval in *days*, then convert to minutes
+            interval_days = max(0.01, random.gammavariate(interval_shape, interval_scale))  # avoid 0
+            interval_minutes = interval_days * 1440
+
+            yield self.hold(interval_minutes)
 
 class SwapperStation(sim.Component):
     def process(self):
