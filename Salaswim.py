@@ -295,9 +295,9 @@ class ContainerGenerator(sim.Component):
 
             # Determine arrival interval in *days*, then convert to minutes
             interval_days = max(0.01, random.gammavariate(interval_shape, interval_scale))  # avoid 0
-            interval_minutes = interval_days * 1440
+            interval_seconds = interval_days * 24 * 60 * 60  # convert days to seconds
 
-            yield self.hold(interval_minutes)
+            yield self.hold(interval_seconds)
 
 class SwapperStation(sim.Component):
     def process(self):
