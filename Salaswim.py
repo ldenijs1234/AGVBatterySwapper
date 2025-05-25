@@ -36,7 +36,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = True
+TEST_MODE = False
 
 # === PARAMETERS ===
 CHARGING_RATE = 300  # kW
