@@ -36,7 +36,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = False
+TEST_MODE = True
 
 # === PARAMETERS ===
 CHARGING_RATE = 300  # kW
@@ -47,7 +47,7 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 1 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 2 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 DEGRADATION_PROFILE = [
@@ -171,6 +171,7 @@ class AGV(sim.Component):
         self.distance_traveled = 0
         self.swap_count = 0
         self.containers_handled = 0
+        self.waiting_for_battery = False  # Track if AGV is waiting for battery
 
     def calculate_distance(self, from_loc, to_loc):
         """Calculate Euclidean distance between two points"""
@@ -196,74 +197,73 @@ class AGV(sim.Component):
     def process(self):
         while True:
             # Battery swap only if needed
-            while self.battery is None:
+            if self.battery is None or self.battery.soc() < SOC_MIN:
+                if self.battery is not None:
+                    # Travel to swapping station if not already there
+                    if self.location != SWAPPING_STATION:
+                        yield from self.travel_to(SWAPPING_STATION)
+                    # Send old battery to charging
+                    ChargingQueue.add(self.battery)
+                    self.battery = None
+                    self.swap_count += 1
+
+                # Wait for a new battery
+                self.waiting_for_battery = True
                 SwappingQueue.add(self)
                 yield self.passivate()
+                
+                # Get a battery (this should be guaranteed by SwapperStation)
+                if len(BatteryQueue) > 0:
+                    self.battery = BatteryQueue.pop()
+                    self.battery.usage_count += 1
+                    yield self.hold(SWAPPING_TIME)
+                    self.waiting_for_battery = False
+                else:
+                    # This shouldn't happen with proper SwapperStation logic
+                    continue
 
-                # Get a battery
-                while len(BatteryQueue) == 0:
-                    AGVQueue.add(self)
-                    yield self.passivate()
-
-                self.battery = BatteryQueue.pop()
-                self.battery.usage_count += 1
-                yield self.hold(SWAPPING_TIME)
-
-            # Travel to random container pickup location
-            pickup_y = random.choice(CONTAINER_PICKUP_RANGE)
-            pickup_point = (CONTAINER_PICKUP_X, pickup_y)
-            yield from self.travel_to(pickup_point)
-
-            # Get a container
+            # Now we have a good battery, look for containers
             if len(ContainerQueue) == 0:
+                # No containers available, wait
                 wait_start = self.env.now()
-
                 AGVQueue.add(self)
                 yield self.passivate()
 
-                # On reactivation — calculate idle energy usage
+                # Calculate idle energy usage while waiting
                 idle_duration = self.env.now() - wait_start
                 agv_idle_time_monitor.tally(idle_duration)
                 idle_energy_used = IDLE_POWER_CONSUMPTION * (idle_duration / 3600) # in kWh 
                 self.battery.energy -= idle_energy_used
                 self.battery.energy = max(0, self.battery.energy)
                 battery_soc_monitor.tally(self.battery.soc())
+                
+                # After waiting, check battery again
+                continue
 
-            # Proceed with container
+            # Get container and deliver
             container = ContainerQueue.pop()
             pickup_time = self.env.now()
+
+            # Travel to pickup location
+            pickup_y = random.choice(CONTAINER_PICKUP_RANGE)
+            pickup_point = (CONTAINER_PICKUP_X, pickup_y)
+            yield from self.travel_to(pickup_point)
             yield self.hold(LOADING_TIME)
 
-            # Drive
+            # Travel to delivery location
             delivery_point = (
                 random.uniform(300, 1300),  # X coordinate (300-1300m)
                 random.uniform(250, 1000)   # Y coordinate (250-1000m)
             )
-            
-            # Travel to delivery point using travel_to()
             yield from self.travel_to(delivery_point)
-
             yield self.hold(UNLOADING_TIME)
 
             self.containers_handled += 1
             delivery_duration = self.env.now() - pickup_time
             container_delivery_time_monitor.tally(delivery_duration / 60) # Convert to minutes 
 
-            # Battery check - if low, go directly to swapping station
-            if self.battery and self.battery.soc() < SOC_MIN:
-                self.swap_count += 1
-                # Travel to swapping station if not already there
-                if self.location != SWAPPING_STATION:
-                    yield from self.travel_to(SWAPPING_STATION)
-                # Swap battery
-                ChargingQueue.add(self.battery)
-                self.battery = None
-            else:
-                # Return to pickup area if battery is okay
-                yield from self.travel_to((CONTAINER_PICKUP_X, random.choice(CONTAINER_PICKUP_RANGE)))
-
-            # Repeat
-            continue
+            # Check if we need to swap battery or can continue
+            # Loop will handle battery check at the top
 
 class Container(sim.Component):
     def setup(self):
@@ -288,12 +288,17 @@ class ContainerGenerator(sim.Component):
 
             container_queue_monitor.tally(len(ContainerQueue))
 
-            # Reactivate AGV if available
-            if len(AGVQueue) > 0:
-                agv = AGVQueue.pop()
+            # Reactivate idle AGVs that have batteries and are not waiting for battery swap
+            agvs_to_reactivate = []
+            for agv in list(AGVQueue):
+                if agv.battery is not None and not agv.waiting_for_battery:
+                    agvs_to_reactivate.append(agv)
+            
+            for agv in agvs_to_reactivate:
+                AGVQueue.remove(agv)
                 agv.activate()
 
-            # Determine arrival interval in *days*, then convert to minutes
+            # Determine arrival interval in *days*, then convert to seconds
             interval_days = max(0.01, random.gammavariate(interval_shape, interval_scale))  # avoid 0
             interval_seconds = interval_days * 24 * 60 * 60  # convert days to seconds
 
@@ -302,11 +307,10 @@ class ContainerGenerator(sim.Component):
 class SwapperStation(sim.Component):
     def process(self):
         while True:
-            if len(SwappingQueue) > 0:
+            if len(SwappingQueue) > 0 and len(BatteryQueue) > 0:
                 agv = SwappingQueue.pop()
                 agv.activate()
             yield self.hold(1)
-
 
 class ChargingStation(sim.Component):
     def process(self):
@@ -332,8 +336,8 @@ class QueueLengthMonitor(sim.Component):
             yield self.hold(60)  # record every 60 seconds
 
 # === ENV SETUP ===
-NUM_AGVS = 24
-NUM_BATTERIES = 30
+NUM_AGVS = 84
+NUM_BATTERIES = 154
 
 # create AGVs and batteries list
 agvs = []
@@ -402,5 +406,3 @@ def print_results():
     
 
 print_results()
-
-# env.run()
