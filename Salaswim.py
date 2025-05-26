@@ -1,6 +1,8 @@
 import salabim as sim
 import random
 import sys
+import matplotlib.pyplot as plt
+import numpy as np
 
 sim.yieldless(False)
 
@@ -35,8 +37,12 @@ env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
-USE_SOC_WINDOW = True
-TEST_MODE = True
+USE_SOC_WINDOW = False
+TEST_MODE = False
+
+# === ENV SETUP ===
+NUM_AGVS = 84
+NUM_BATTERIES = 154
 
 # === PARAMETERS ===
 CHARGING_RATE = 300  # kW
@@ -47,7 +53,7 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 2 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 DEGRADATION_PROFILE = [
@@ -85,6 +91,19 @@ swap_monitor = sim.Monitor("AGV Swaps")
 container_monitor = sim.Monitor("Containers Delivered")
 distance_monitor = sim.Monitor("Distance Traveled")
 travel_time_monitor = sim.Monitor("Travel Time")
+
+delivery_time_monitor = sim.Monitor("Shipment Handling Time")  # Time from first container to queue empty
+delivery_amount_monitor = sim.Monitor("Containers Per Shipment")
+
+# === HOURLY QUEUE MONITORS ===
+hourly_queue_data = {
+    'time': [],
+    'battery_queue': [],
+    'container_queue': [],
+    'agv_queue': [],
+    'swapping_queue': [],
+    'charging_queue': []
+}
 
 # === QUEUES ===
 BatteryQueue = sim.Queue("AvailableBatteries")
@@ -335,9 +354,20 @@ class QueueLengthMonitor(sim.Component):
 
             yield self.hold(60)  # record every 60 seconds
 
-# === ENV SETUP ===
-NUM_AGVS = 84
-NUM_BATTERIES = 154
+class HourlyQueueMonitor(sim.Component):
+    def process(self):
+        while True:
+            # Record queue lengths every hour
+            current_time_hours = self.env.now() / 3600  # Convert seconds to hours
+            
+            hourly_queue_data['time'].append(current_time_hours)
+            hourly_queue_data['battery_queue'].append(len(BatteryQueue))
+            hourly_queue_data['container_queue'].append(len(ContainerQueue))
+            hourly_queue_data['agv_queue'].append(len(AGVQueue))
+            hourly_queue_data['swapping_queue'].append(len(SwappingQueue))
+            hourly_queue_data['charging_queue'].append(len(ChargingQueue))
+            
+            yield self.hold(3600)  # Wait 1 hour (3600 seconds)
 
 # create AGVs and batteries list
 agvs = []
@@ -358,6 +388,7 @@ ContainerGenerator().activate()
 SwapperStation().activate()
 ChargingStation().activate()
 QueueLengthMonitor().activate()
+HourlyQueueMonitor().activate()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
@@ -378,14 +409,11 @@ for i, battery in enumerate(batteries):
           f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
           f"Current SOC: {battery.soc():.1f}%")
 
-if batteries:  # Only print averages if we have batteries
-    print("\n=== AVERAGE BATTERY STATS ===")
-    print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
-    print(f"Avg usage count: {sum(b.usage_count for b in batteries)/len(batteries):.1f}")
-    print(f"Total energy delivered: {sum(b.total_energy_delivered for b in batteries):.1f} kWh")
-    print(f"Avg SOC across batteries: {battery_soc_monitor.mean():.1f}%")
-else:
-    print("No batteries found in the simulation")
+print("\n=== AVERAGE BATTERY STATS ===")
+print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
+print(f"Avg usage count: {sum(b.usage_count for b in batteries)/len(batteries):.1f}")
+print(f"Total energy delivered: {sum(b.total_energy_delivered for b in batteries):.1f} kWh")
+print(f"Avg SOC across batteries: {battery_soc_monitor.mean():.1f}%")
 
 print("\n=== AVERAGE AGV STATS ===")
 print(f"Avg Swaps per AGV: {swap_monitor.mean():.2f}")
@@ -404,5 +432,100 @@ def print_results():
     print(f"Container Queue - avg length: {container_queue_monitor.mean():.2f}")
     print(f"AGV Queue - avg length: {AGV_queue_monitor.mean():.2f}")
     
-
 print_results()
+
+#=== PLOTTING QUEUE LENGTHS ===
+def plot_queue_lengths():
+    # Convert time to days for better readability
+    time_days = np.array(hourly_queue_data['time'])  / 24
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('Queue Lengths Over Time', fontsize=16)
+    
+    # Container Queue
+    axes[0, 0].plot(time_days, hourly_queue_data['container_queue'], 'b-', linewidth=2)
+    axes[0, 0].set_title('Container Queue Length')
+    axes[0, 0].set_xlabel('Time (days)')
+    axes[0, 0].set_ylabel('Queue Length')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Battery Queue
+    axes[0, 1].plot(time_days, hourly_queue_data['battery_queue'], 'g-', linewidth=2)
+    axes[0, 1].set_title('Battery Queue Length')
+    axes[0, 1].set_xlabel('Time (days)')
+    axes[0, 1].set_ylabel('Queue Length')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # AGV Queue
+    axes[0, 2].plot(time_days, hourly_queue_data['agv_queue'], 'r-', linewidth=2)
+    axes[0, 2].set_title('AGV Queue Length')
+    axes[0, 2].set_xlabel('Time (days)')
+    axes[0, 2].set_ylabel('Queue Length')
+    axes[0, 2].grid(True, alpha=0.3)
+    
+    # Swapping Queue
+    axes[1, 0].plot(time_days, hourly_queue_data['swapping_queue'], 'orange', linewidth=2)
+    axes[1, 0].set_title('Swapping Queue Length')
+    axes[1, 0].set_xlabel('Time (days)')
+    axes[1, 0].set_ylabel('Queue Length')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    # Charging Queue
+    axes[1, 1].plot(time_days, hourly_queue_data['charging_queue'], 'purple', linewidth=2)
+    axes[1, 1].set_title('Charging Queue Length')
+    axes[1, 1].set_xlabel('Time (days)')
+    axes[1, 1].set_ylabel('Queue Length')
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    # Combined plot
+    # axes[1, 2].plot(time_days, hourly_queue_data['container_queue'], 'b-', label='Container Queue', alpha=0.8)
+    # axes[1, 2].plot(time_days, hourly_queue_data['battery_queue'], 'g-', label='Battery Queue', alpha=0.8)
+    # axes[1, 2].plot(time_days, hourly_queue_data['agv_queue'], 'r-', label='AGV Queue', alpha=0.8)
+    # axes[1, 2].plot(time_days, hourly_queue_data['swapping_queue'], 'orange', label='Swapping Queue', alpha=0.8)
+    # axes[1, 2].plot(time_days, hourly_queue_data['charging_queue'], 'purple', label='Charging Queue', alpha=0.8)
+    # axes[1, 2].set_title('All Queues Combined')
+    # axes[1, 2].set_xlabel('Time (days)')
+    # axes[1, 2].set_ylabel('Queue Length')
+    # axes[1, 2].legend()
+    # axes[1, 2].grid(True, alpha=0.3)
+    
+    plt.show()
+    
+    # Also create a separate figure with normalized view (log scale for container queue)
+    plt.figure(figsize=(15, 8))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(time_days, hourly_queue_data['container_queue'], 'b-', linewidth=2, label='Container Queue')
+    plt.title('Container Queue Length (Linear Scale)')
+    plt.xlabel('Time (days)')
+    plt.ylabel('Queue Length')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.subplot(2, 1, 2)
+    # Plot other queues without container queue for better visibility
+    plt.plot(time_days, hourly_queue_data['battery_queue'], 'g-', label='Battery Queue', linewidth=2)
+    plt.plot(time_days, hourly_queue_data['agv_queue'], 'r-', label='AGV Queue', linewidth=2)
+    plt.plot(time_days, hourly_queue_data['swapping_queue'], 'orange', label='Swapping Queue', linewidth=2)
+    plt.plot(time_days, hourly_queue_data['charging_queue'], 'purple', label='Charging Queue', linewidth=2)
+    plt.title('Other Queue Lengths (Excluding Container Queue)')
+    plt.xlabel('Time (days)')
+    plt.ylabel('Queue Length')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.show()
+
+plot_queue_lengths()
+
+# Print some statistics about the queues
+# print("\n=== QUEUE STATISTICS ===")
+# if hourly_queue_data['time']:
+#     print(f"Container Queue - avg: {np.mean(hourly_queue_data['container_queue']):.1f}, max: {np.max(hourly_queue_data['container_queue'])}")
+#     print(f"Battery Queue - avg: {np.mean(hourly_queue_data['battery_queue']):.1f}, max: {np.max(hourly_queue_data['battery_queue'])}")
+#     print(f"AGV Queue - avg: {np.mean(hourly_queue_data['agv_queue']):.1f}, max: {np.max(hourly_queue_data['agv_queue'])}")
+#     print(f"Swapping Queue - avg: {np.mean(hourly_queue_data['swapping_queue']):.1f}, max: {np.max(hourly_queue_data['swapping_queue'])}")
+#     print(f"Charging Queue - avg: {np.mean(hourly_queue_data['charging_queue']):.1f}, max: {np.max(hourly_queue_data['charging_queue'])}")
+
+
