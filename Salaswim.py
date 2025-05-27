@@ -38,27 +38,27 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = True
+TEST_MODE = False
 
 # === ENV SETUP ===
 NUM_AGVS = 84
-NUM_BATTERIES = 154
+NUM_BATTERIES = NUM_AGVS if not USE_SWAPPING else 154
 
 # === PARAMETERS ===
 CHARGING_RATE = 300  # kW
 BATTERY_CAPACITY = 191  # kWh
-AGV_SPEED = 20 * 1000 / 3600  # m/s
-SWAPPING_TIME = 180 # seconds	
+AGV_SPEED = 20 * 1000 / 3600  # m/s (avg speed of 20 km/h)
+SWAPPING_TIME = 0 if not USE_SWAPPING else 180 # seconds	
 LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 300 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 
 DEGRADATION_PROFILE = [
-    ((0, 15), 0.15),    # 15% capacity loss at 1200 cycles
+    ((0, 15), 0.55),    # 15% capacity loss at 1200 cycles
     ((15, 25), 0.125),  # 12.5% capacity loss
     ((25, 35), 0.09),   # 9% capacity loss
     ((35, 45), 0.06),   # 6% capacity loss
@@ -66,7 +66,7 @@ DEGRADATION_PROFILE = [
     ((55, 65), 0.08),   # 8% capacity loss
     ((65, 75), 0.09),   # 9% capacity loss
     ((75, 85), 0.09),   # 9% capacity loss
-    ((85, 100), 0.095),  # 9.5% capacity loss
+    ((85, 100), 0.55),  # 9.5% capacity loss
 ]
 # Coordinates in meters
 SWAPPING_STATION = (0, 0)
@@ -235,7 +235,7 @@ class AGV(sim.Component):
                     # Send old battery to charging
                     ChargingQueue.add(self.battery)
                     self.battery = None
-                    self.swap_count += 1
+                    self.swap_count += 1 if not USE_SWAPPING else 0
 
                 # Wait for a new battery
                 self.waiting_for_battery = True
@@ -309,6 +309,11 @@ class ContainerGenerator(sim.Component):
         interval_shape = 3
         interval_scale = 1 / interval_shape  # ≈ 0.333...
 
+        # Crane cycle time parameters (in seconds)
+        CRANE_CYCLE_MEAN = 20
+        CRANE_CYCLE_STD = 10
+        MIN_CYCLE_TIME = 1  # Minimum reasonable cycle time
+
         while True:
             # Generate number of containers from gamma distribution
             num_containers = max(1, int(random.gammavariate(count_shape, count_scale)))
@@ -330,11 +335,18 @@ class ContainerGenerator(sim.Component):
             # Record shipment size
             shipment_size_monitor.tally(num_containers)
 
-            # Add containers to queue
-            for _ in range(num_containers):
+            # Add containers to queue with normal distribution timing
+            for i in range(num_containers):
+                # Generate cycle time with normal distribution
+                cycle_time = max(MIN_CYCLE_TIME, random.normalvariate(CRANE_CYCLE_MEAN, CRANE_CYCLE_STD))
+                
+                # Hold for the cycle time before adding the next container
+                if i > 0:  # No wait before first container
+                    yield self.hold(cycle_time)
+                
+                # Add the container to the queue
                 ContainerQueue.add(Container())
-
-            container_queue_monitor.tally(len(ContainerQueue))
+                container_queue_monitor.tally(len(ContainerQueue))
 
             # Reactivate idle AGVs that have batteries and are not waiting for battery swap
             agvs_to_reactivate = []
@@ -465,19 +477,19 @@ env.run(till=SIM_TIME)
 
 loading_bar.complete()
 
-print("\n=== AGV STATISTICS ===")
-for agv in agvs:
-    print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
-    swap_monitor.tally(agv.swap_count)
-    container_monitor.tally(agv.containers_handled)
-    distance_monitor.tally(agv.distance_traveled)
+# print("\n=== AGV STATISTICS ===")
+# for agv in agvs:
+#     print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
+#     swap_monitor.tally(agv.swap_count)
+#     container_monitor.tally(agv.containers_handled)
+#     distance_monitor.tally(agv.distance_traveled)
 
-print("\n=== BATTERY STATISTICS ===")
-for i, battery in enumerate(batteries):
-    print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
-          f"Usage count: {battery.usage_count}, "
-          f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
-          f"Current SOC: {battery.soc():.1f}%")
+# print("\n=== BATTERY STATISTICS ===")
+# for i, battery in enumerate(batteries):
+#     print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
+#           f"Usage count: {battery.usage_count}, "
+#           f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
+#           f"Current SOC: {battery.soc():.1f}%")
 
 print("\n=== AVERAGE BATTERY STATS ===")
 print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
