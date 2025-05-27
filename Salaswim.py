@@ -36,8 +36,8 @@ class TextLoadingBar:
 env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
-USE_SWAPPING = True
-USE_SOC_WINDOW = True
+USE_SWAPPING = False
+USE_SOC_WINDOW = False
 TEST_MODE = False
 
 # === ENV SETUP ===
@@ -56,6 +56,7 @@ IDLE_POWER_CONSUMPTION = 9  # kWh
 SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
+CRANE_CYCLE_TIME = random.normalvariate(20, 10)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
 
 DEGRADATION_PROFILE = [
     ((0, 15), 0.55),    # 15% capacity loss at 1200 cycles
@@ -308,12 +309,7 @@ class ContainerGenerator(sim.Component):
         # Arrival interval distribution (in days)
         interval_shape = 3
         interval_scale = 1 / interval_shape  # ≈ 0.333...
-
-        # Crane cycle time parameters (in seconds)
-        CRANE_CYCLE_MEAN = 20
-        CRANE_CYCLE_STD = 10
-        MIN_CYCLE_TIME = 1  # Minimum reasonable cycle time
-
+       
         while True:
             # Generate number of containers from gamma distribution
             num_containers = max(1, int(random.gammavariate(count_shape, count_scale)))
@@ -338,7 +334,7 @@ class ContainerGenerator(sim.Component):
             # Add containers to queue with normal distribution timing
             for i in range(num_containers):
                 # Generate cycle time with normal distribution
-                cycle_time = max(MIN_CYCLE_TIME, random.normalvariate(CRANE_CYCLE_MEAN, CRANE_CYCLE_STD))
+                cycle_time = CRANE_CYCLE_TIME
                 
                 # Hold for the cycle time before adding the next container
                 if i > 0:  # No wait before first container
