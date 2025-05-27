@@ -37,11 +37,11 @@ env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
-USE_SOC_WINDOW = False
-TEST_MODE = False
+USE_SOC_WINDOW = True
+TEST_MODE = True
 
 # === ENV SETUP ===
-NUM_AGVS = 84
+NUM_AGVS = 44
 NUM_BATTERIES = 154
 
 # === PARAMETERS ===
@@ -53,7 +53,7 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 300 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 DEGRADATION_PROFILE = [
@@ -94,6 +94,8 @@ travel_time_monitor = sim.Monitor("Travel Time")
 
 delivery_time_monitor = sim.Monitor("Shipment Handling Time")  # Time from first container to queue empty
 delivery_amount_monitor = sim.Monitor("Containers Per Shipment")
+shipment_size_monitor = sim.Monitor("Shipment Sizes")
+shipment_delivery_time_monitor = sim.Monitor("Shipment Delivery Times")
 
 # === HOURLY QUEUE MONITORS ===
 hourly_queue_data = {
@@ -103,6 +105,14 @@ hourly_queue_data = {
     'agv_queue': [],
     'swapping_queue': [],
     'charging_queue': []
+}
+
+# Shipment tracking data structure
+shipment_tracker = {
+    'active_shipments': [],  # List of active shipment dictionaries
+    'completed_shipments': [],  # List of completed shipments
+    'total_shipments': 0,
+    'last_queue_empty_time': 0
 }
 
 # === QUEUES ===
@@ -301,7 +311,25 @@ class ContainerGenerator(sim.Component):
         while True:
             # Generate number of containers from gamma distribution
             num_containers = max(1, int(random.gammavariate(count_shape, count_scale)))
+            arrival_time = self.env.now()
 
+            # Create shipment record
+            shipment = {
+                'id': shipment_tracker['total_shipments'],
+                'size': num_containers,
+                'arrival_time': arrival_time,
+                'delivery_time': None,
+                'completion_time': None
+            }
+            
+            # Add to tracking
+            shipment_tracker['active_shipments'].append(shipment)
+            shipment_tracker['total_shipments'] += 1
+            
+            # Record shipment size
+            shipment_size_monitor.tally(num_containers)
+
+            # Add containers to queue
             for _ in range(num_containers):
                 ContainerQueue.add(Container())
 
@@ -369,6 +397,46 @@ class HourlyQueueMonitor(sim.Component):
             
             yield self.hold(3600)  # Wait 1 hour (3600 seconds)
 
+class ShipmentTracker(sim.Component):
+    """Tracks when container queue becomes empty to calculate shipment delivery times"""
+    
+    def setup(self):
+        self.queue_was_empty = True  # Start assuming queue is empty
+        self.last_check_time = 0
+    
+    def process(self):
+        while True:
+            current_queue_length = len(ContainerQueue)
+            current_time = self.env.now()
+            
+            # Check if queue just became empty
+            if current_queue_length == 0 and not self.queue_was_empty:
+                self.queue_was_empty = True
+                shipment_tracker['last_queue_empty_time'] = current_time
+                
+                # Complete all active shipments
+                completed_shipments = []
+                for shipment in shipment_tracker['active_shipments']:
+                    delivery_time = current_time - shipment['arrival_time']
+                    shipment['delivery_time'] = delivery_time
+                    shipment['completion_time'] = current_time
+                    
+                    # Record in monitors
+                    shipment_delivery_time_monitor.tally(delivery_time / 3600)  # Convert to hours
+                    
+                    completed_shipments.append(shipment)
+                
+                # Move completed shipments
+                shipment_tracker['completed_shipments'].extend(completed_shipments)
+                shipment_tracker['active_shipments'].clear()
+                
+            # Check if queue has containers (not empty)
+            elif current_queue_length > 0:
+                self.queue_was_empty = False
+            
+            self.last_check_time = current_time
+            yield self.hold(30)  # Check every 30 seconds
+
 # create AGVs and batteries list
 agvs = []
 batteries = []
@@ -389,6 +457,7 @@ SwapperStation().activate()
 ChargingStation().activate()
 QueueLengthMonitor().activate()
 HourlyQueueMonitor().activate()
+ShipmentTracker().activate()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
@@ -420,7 +489,7 @@ print(f"Avg Swaps per AGV: {swap_monitor.mean():.2f}")
 print(f"Avg Containers per AGV: {container_monitor.mean():.2f}")
 print(f"Avg Distance per AGV: {distance_monitor.mean()/1000:.2f} km")
 
-# === FINAL OUTPUT ===
+# === SIMULATION RESULTS ===
 def print_results():
     print("\n=== SIMULATION RESULTS ===")
     print(f"Battery SOC - avg: {battery_soc_monitor.mean():.2f} %")
@@ -431,66 +500,88 @@ def print_results():
     print(f"Battery Queue - avg length: {battery_queue_monitor.mean():.2f}")
     print(f"Container Queue - avg length: {container_queue_monitor.mean():.2f}")
     print(f"AGV Queue - avg length: {AGV_queue_monitor.mean():.2f}")
-    
-print_results()
 
-#=== PLOTTING QUEUE LENGTHS ===
+def print_shipment_statistics():
+    print("\n=== SHIPMENT STATISTICS ===")
+    print(f"Total Shipments: {shipment_tracker['total_shipments']}")
+    completed_count = len(shipment_tracker['completed_shipments'])
+    active_count = len(shipment_tracker['active_shipments'])
+    print(f"Completed Shipments: {completed_count}")
+    print(f"Active Shipments: {active_count}")
+        
+    if shipment_size_monitor.number_of_entries() > 0:
+        print(f"Average Shipment Size: {shipment_size_monitor.mean():.2f} containers")
+        shipment_sizes = shipment_size_monitor.x()  # Call the method to get the list
+        print(f"Max Shipment Size: {max(shipment_sizes):.0f} containers")
+        print(f"Min Shipment Size: {min(shipment_sizes):.0f} containers")
+        
+    if shipment_delivery_time_monitor.number_of_entries() > 0:
+        print(f"Average Shipment Delivery Time: {shipment_delivery_time_monitor.mean():.2f} hours")
+        delivery_times = shipment_delivery_time_monitor.x()  # Call the method to get the list
+        print(f"Max Shipment Delivery Time: {max(delivery_times):.2f} hours")
+        print(f"Min Shipment Delivery Time: {min(delivery_times):.2f} hours")
+        
+    # Additional detailed statistics
+    if shipment_tracker['completed_shipments']:
+        print("\n=== DETAILED SHIPMENT ANALYSIS ===")
+        completed = shipment_tracker['completed_shipments']
+            
+        total_containers = sum(s['size'] for s in completed)
+        avg_size = total_containers / len(completed)
+        avg_delivery_hours = sum(s['delivery_time'] for s in completed) / len(completed) / 3600
+            
+        print(f"Total Containers Delivered in Completed Shipments: {total_containers}")
+        print(f"Average Containers per Completed Shipment: {avg_size:.2f}")
+        print(f"Average Delivery Time for Completed Shipments: {avg_delivery_hours:.2f} hours")
+            
+        # Show some examples of recent shipments
+        print(f"\n=== RECENT COMPLETED SHIPMENTS (Last 5) ===")
+        for shipment in completed[-5:]:
+            delivery_hours = shipment['delivery_time'] / 3600
+            print(f"Shipment {shipment['id']}: {shipment['size']} containers, "
+                  f"{delivery_hours:.2f} hours delivery time")
+
+def analyze_shipment_patterns():
+    """Analyze shipment patterns and overlaps"""
+    if not shipment_tracker['completed_shipments']:
+        print("No completed shipments to analyze.")
+        return
+    
+    completed = shipment_tracker['completed_shipments']
+    
+    print("\n=== SHIPMENT PATTERN ANALYSIS ===")
+    
+    # Calculate overlaps
+    overlapping_shipments = 0
+    for i, shipment in enumerate(completed):
+        # Check if this shipment overlapped with the next one
+        if i < len(completed) - 1:
+            next_shipment = completed[i + 1]
+            if next_shipment['arrival_time'] < shipment['completion_time']:
+                overlapping_shipments += 1
+    
+    print(f"Shipments with Overlaps: {overlapping_shipments} out of {len(completed)} ({overlapping_shipments/len(completed)*100:.1f}%)")
+    
+    # Delivery time distribution
+    delivery_times_hours = [s['delivery_time'] / 3600 for s in completed]
+    delivery_times_hours.sort()
+    
+    if delivery_times_hours:
+        median_idx = len(delivery_times_hours) // 2
+        median_time = delivery_times_hours[median_idx]
+        q1_idx = len(delivery_times_hours) // 4
+        q3_idx = 3 * len(delivery_times_hours) // 4
+        
+        print(f"Delivery Time Distribution (hours):")
+        print(f"  Min: {min(delivery_times_hours):.2f}")
+        print(f"  Q1 (25%): {delivery_times_hours[q1_idx]:.2f}")
+        print(f"  Median: {median_time:.2f}")
+        print(f"  Q3 (75%): {delivery_times_hours[q3_idx]:.2f}")
+        print(f"  Max: {max(delivery_times_hours):.2f}")
+
 def plot_queue_lengths():
     # Convert time to days for better readability
-    time_days = np.array(hourly_queue_data['time'])  / 24
-    
-    # Create subplots
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle('Queue Lengths Over Time', fontsize=16)
-    
-    # Container Queue
-    axes[0, 0].plot(time_days, hourly_queue_data['container_queue'], 'b-', linewidth=2)
-    axes[0, 0].set_title('Container Queue Length')
-    axes[0, 0].set_xlabel('Time (days)')
-    axes[0, 0].set_ylabel('Queue Length')
-    axes[0, 0].grid(True, alpha=0.3)
-    
-    # Battery Queue
-    axes[0, 1].plot(time_days, hourly_queue_data['battery_queue'], 'g-', linewidth=2)
-    axes[0, 1].set_title('Battery Queue Length')
-    axes[0, 1].set_xlabel('Time (days)')
-    axes[0, 1].set_ylabel('Queue Length')
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # AGV Queue
-    axes[0, 2].plot(time_days, hourly_queue_data['agv_queue'], 'r-', linewidth=2)
-    axes[0, 2].set_title('AGV Queue Length')
-    axes[0, 2].set_xlabel('Time (days)')
-    axes[0, 2].set_ylabel('Queue Length')
-    axes[0, 2].grid(True, alpha=0.3)
-    
-    # Swapping Queue
-    axes[1, 0].plot(time_days, hourly_queue_data['swapping_queue'], 'orange', linewidth=2)
-    axes[1, 0].set_title('Swapping Queue Length')
-    axes[1, 0].set_xlabel('Time (days)')
-    axes[1, 0].set_ylabel('Queue Length')
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    # Charging Queue
-    axes[1, 1].plot(time_days, hourly_queue_data['charging_queue'], 'purple', linewidth=2)
-    axes[1, 1].set_title('Charging Queue Length')
-    axes[1, 1].set_xlabel('Time (days)')
-    axes[1, 1].set_ylabel('Queue Length')
-    axes[1, 1].grid(True, alpha=0.3)
-    
-    # Combined plot
-    # axes[1, 2].plot(time_days, hourly_queue_data['container_queue'], 'b-', label='Container Queue', alpha=0.8)
-    # axes[1, 2].plot(time_days, hourly_queue_data['battery_queue'], 'g-', label='Battery Queue', alpha=0.8)
-    # axes[1, 2].plot(time_days, hourly_queue_data['agv_queue'], 'r-', label='AGV Queue', alpha=0.8)
-    # axes[1, 2].plot(time_days, hourly_queue_data['swapping_queue'], 'orange', label='Swapping Queue', alpha=0.8)
-    # axes[1, 2].plot(time_days, hourly_queue_data['charging_queue'], 'purple', label='Charging Queue', alpha=0.8)
-    # axes[1, 2].set_title('All Queues Combined')
-    # axes[1, 2].set_xlabel('Time (days)')
-    # axes[1, 2].set_ylabel('Queue Length')
-    # axes[1, 2].legend()
-    # axes[1, 2].grid(True, alpha=0.3)
-    
-    plt.show()
+    time_days = np.array(hourly_queue_data['time']) / 24
     
     # Also create a separate figure with normalized view (log scale for container queue)
     plt.figure(figsize=(15, 8))
@@ -517,6 +608,10 @@ def plot_queue_lengths():
     
     plt.show()
 
+# === CALL ALL OUTPUT FUNCTIONS IN ORDER ===
+print_results()
+print_shipment_statistics()
+analyze_shipment_patterns()
 plot_queue_lengths()
 
 # Print some statistics about the queues
