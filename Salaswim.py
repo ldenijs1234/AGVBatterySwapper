@@ -56,6 +56,7 @@ IDLE_POWER_CONSUMPTION = 9  # kWh
 SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 300 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
+
 DEGRADATION_PROFILE = [
     ((0, 15), 0.15),    # 15% capacity loss at 1200 cycles
     ((15, 25), 0.125),  # 12.5% capacity loss
@@ -612,6 +613,10 @@ def plot_queue_lengths():
 print_results()
 print_shipment_statistics()
 analyze_shipment_patterns()
+
+input("\nPress Enter to view queue plots...")
+
+# Then show plots
 plot_queue_lengths()
 
 # Print some statistics about the queues
@@ -622,5 +627,4 @@ plot_queue_lengths()
 #     print(f"AGV Queue - avg: {np.mean(hourly_queue_data['agv_queue']):.1f}, max: {np.max(hourly_queue_data['agv_queue'])}")
 #     print(f"Swapping Queue - avg: {np.mean(hourly_queue_data['swapping_queue']):.1f}, max: {np.max(hourly_queue_data['swapping_queue'])}")
 #     print(f"Charging Queue - avg: {np.mean(hourly_queue_data['charging_queue']):.1f}, max: {np.max(hourly_queue_data['charging_queue'])}")
-
 
