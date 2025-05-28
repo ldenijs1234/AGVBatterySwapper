@@ -317,7 +317,18 @@ class ContainerGenerator(sim.Component):
             # Generate number of containers from gamma distribution
             num_containers = max(1, int(random.gammavariate(count_shape, count_scale)))
             arrival_time = self.env.now()
-
+            
+            # Generate deadline based on shipment size
+            # Base deadline: normal distribution with mean 3000 minutes for mean shipment size (7064)
+            # Scale the deadline proportionally to shipment size
+            size_ratio = num_containers / 7064  # Ratio of this shipment to mean size
+            base_deadline_minutes = random.normalvariate(3000, 1400)  # Mean 3000, range roughly 1400-4600
+            base_deadline_minutes = max(500, min(7000, base_deadline_minutes))  # Clamp to 500-7000 range
+            
+            # Scale deadline based on shipment size
+            deadline_minutes = base_deadline_minutes * size_ratio
+            deadline_minutes = max(100, deadline_minutes)  # Minimum 100 minutes for any shipment
+            
             # Create shipment record
             shipment = {
                 'id': shipment_tracker['total_shipments'],
@@ -328,7 +339,11 @@ class ContainerGenerator(sim.Component):
                 'unloading_duration': None,
                 'unloading_completed': False,
                 'delivery_time': None,
-                'completion_time': None
+                'completion_time': None,
+                'deadline_minutes': deadline_minutes,
+                'deadline_time': arrival_time + (deadline_minutes * 60),  # Convert to seconds
+                'is_on_time': None,  # Will be determined when completed
+                'is_overdue': None
             }
             
             # Add to tracking
@@ -422,7 +437,6 @@ class HourlyQueueMonitor(sim.Component):
 
 class ShipmentTracker(sim.Component):
     """Tracks shipment unloading times and container queue dynamics"""
-    
     def setup(self):
         self.queue_was_empty = True  # Start assuming queue is empty
         self.last_check_time = 0
@@ -445,6 +459,14 @@ class ShipmentTracker(sim.Component):
                         delivery_time = current_time - shipment['arrival_time']
                         shipment['delivery_time'] = delivery_time
                         shipment['completion_time'] = current_time
+                        
+                        # Check if shipment was delivered on time
+                        if current_time <= shipment['deadline_time']:
+                            shipment['is_on_time'] = True
+                            shipment['is_overdue'] = False
+                        else:
+                            shipment['is_on_time'] = False
+                            shipment['is_overdue'] = True
                         
                         # Record in monitors
                         shipment_delivery_time_monitor.tally(delivery_time / 3600)  # Convert to hours
@@ -603,11 +625,39 @@ def print_shipment_statistics():
         print(f"Average Delivery Time for Completed Shipments: {avg_delivery_hours:.2f} hours")
             
         # Show some examples of recent shipments
-        print(f"\n=== RECENT COMPLETED SHIPMENTS (Last 5) ===")
+        print("\n=== RECENT COMPLETED SHIPMENTS (Last 5) ===")
         for shipment in completed[-5:]:
-            delivery_hours = shipment['delivery_time'] / 3600
-            print(f"Shipment {shipment['id']}: {shipment['size']} containers, "
-                  f"{delivery_hours:.2f} hours delivery time")
+            status = "ON TIME" if shipment['is_on_time'] else f"OVERDUE (delay: {(shipment['completion_time'] - shipment['deadline_time']) / 60:.1f} min)"
+            print(
+                f"Shipment {shipment['id']}: {shipment['size']} containers, "
+                f"{shipment['unloading_duration'] / 60:.1f} min unloading, "
+                f"{(shipment['delivery_time'] / 3600):.1f} hours delivery, "
+                f"deadline: {(shipment['deadline_minutes'] / 60):.1f} hours, {status}"
+            )
+
+def print_delivery_performance():
+    completed_shipments = shipment_tracker['completed_shipments']
+    
+    if not completed_shipments:
+        print("\n=== DELIVERY PERFORMANCE ===\nNo shipments completed yet")
+        return
+    
+    # Calculate performance metrics
+    on_time = [s for s in completed_shipments if s['is_on_time']]
+    overdue = [s for s in completed_shipments if s['is_overdue']]
+    
+    total_shipments = len(completed_shipments)
+    on_time_pct = (len(on_time) / total_shipments) * 100 if total_shipments > 0 else 0
+    overdue_pct = 100 - on_time_pct
+    
+    avg_delay = (sum((s['completion_time'] - s['deadline_time']) / 60 
+                for s in overdue) / len(overdue)) if overdue else 0
+    
+    # Print performance summary
+    print("\n=== DELIVERY PERFORMANCE ===")
+    print(f"Shipments Delivered ON TIME: {len(on_time)} ({on_time_pct:.1f}%)")
+    print(f"Shipments Delivered OVERDUE: {len(overdue)} ({overdue_pct:.1f}%)")
+    print(f"Average Delay for Overdue Shipments: {avg_delay:.1f} minutes")
 
 def plot_queue_lengths():
     # Convert time to days for better readability
@@ -641,6 +691,7 @@ def plot_queue_lengths():
 # === CALL ALL OUTPUT FUNCTIONS IN ORDER ===
 print_results()
 print_shipment_statistics()
+print_delivery_performance()
 
 input("\nPress Enter to view queue plots...")
 
