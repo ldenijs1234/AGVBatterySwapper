@@ -39,7 +39,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = False
+TEST_MODE = True
 
 # === ENV SETUP ===
 NUM_AGVS = 84
@@ -99,6 +99,7 @@ delivery_time_monitor = sim.Monitor("Shipment Handling Time")  # Time from first
 delivery_amount_monitor = sim.Monitor("Containers Per Shipment")
 shipment_size_monitor = sim.Monitor("Shipment Sizes")
 shipment_delivery_time_monitor = sim.Monitor("Shipment Delivery Times")
+shipment_unloading_time_monitor = sim.Monitor("Shipment Unloading Times")
 
 # === HOURLY QUEUE MONITORS ===
 hourly_queue_data = {
@@ -322,6 +323,10 @@ class ContainerGenerator(sim.Component):
                 'id': shipment_tracker['total_shipments'],
                 'size': num_containers,
                 'arrival_time': arrival_time,
+                'unloading_start_time': arrival_time,
+                'unloading_completion_time': None,
+                'unloading_duration': None,
+                'unloading_completed': False,
                 'delivery_time': None,
                 'completion_time': None
             }
@@ -333,41 +338,40 @@ class ContainerGenerator(sim.Component):
             # Record shipment size
             shipment_size_monitor.tally(num_containers)
 
-            # How many full 6-container cycles are needed?
+            # Calculate how many full 6-container cycles are needed
             cycles = math.ceil(num_containers / 6)  # 6 containers per cycle
+            containers_added = 0
 
             # Simulate the crane loading containers
             for cycle in range(cycles):
                 # Generate cycle time with normal distribution
                 cycle_time = CRANE_CYCLE_TIME
                 
-                # Hold for the cycle time before adding the next container
-                if cycle > 0:  # No wait before first container
+                # Hold for the cycle time before adding the next batch
+                if cycle > 0:  # No wait before first batch
                     yield self.hold(cycle_time)
 
                 remaining = num_containers - cycle * 6
                 to_unload = min(remaining, 6)  # Unload up to 6 containers per cycle
 
-                # Add the container to the queue
+                # Add containers to queue and immediately reactivate AGVs
                 for _ in range(to_unload):
                     ContainerQueue.add(Container())
-                container_queue_monitor.tally(len(ContainerQueue))
-
-
-            # Reactivate idle AGVs that have batteries and are not waiting for battery swap
-            agvs_to_reactivate = []
-            for agv in list(AGVQueue):
-                if agv.battery is not None and not agv.waiting_for_battery:
-                    agvs_to_reactivate.append(agv)
+                    container_queue_monitor.tally(len(ContainerQueue))
+                    containers_added += 1
             
-            for agv in agvs_to_reactivate:
-                AGVQueue.remove(agv)
-                agv.activate()
-
-            # Determine arrival interval in *days*, then convert to seconds
-            interval_days = max(0.01, random.gammavariate(interval_shape, interval_scale))  # avoid 0
-            interval_seconds = interval_days * 24 * 60 * 60  # convert days to seconds
-
+            # Mark shipment unloading as completed
+            unloading_completion_time = self.env.now()
+            shipment['unloading_completion_time'] = unloading_completion_time
+            shipment['unloading_duration'] = unloading_completion_time - shipment['unloading_start_time']
+            shipment['unloading_completed'] = True
+            
+            # Record unloading duration in a new monitor
+            shipment_unloading_time_monitor.tally(shipment['unloading_duration'] / 60)  # Convert to minutes
+            
+            # Time between shipments
+            interval_days = max(0.01, random.gammavariate(interval_shape, interval_scale))
+            interval_seconds = interval_days * 24 * 60 * 60
             yield self.hold(interval_seconds)
 
 class SwapperStation(sim.Component):
@@ -417,7 +421,7 @@ class HourlyQueueMonitor(sim.Component):
             yield self.hold(3600)  # Wait 1 hour (3600 seconds)
 
 class ShipmentTracker(sim.Component):
-    """Tracks when container queue becomes empty to calculate shipment delivery times"""
+    """Tracks shipment unloading times and container queue dynamics"""
     
     def setup(self):
         self.queue_was_empty = True  # Start assuming queue is empty
@@ -433,21 +437,27 @@ class ShipmentTracker(sim.Component):
                 self.queue_was_empty = True
                 shipment_tracker['last_queue_empty_time'] = current_time
                 
-                # Complete all active shipments
+                # Complete all active shipments that have finished unloading
                 completed_shipments = []
                 for shipment in shipment_tracker['active_shipments']:
-                    delivery_time = current_time - shipment['arrival_time']
-                    shipment['delivery_time'] = delivery_time
-                    shipment['completion_time'] = current_time
-                    
-                    # Record in monitors
-                    shipment_delivery_time_monitor.tally(delivery_time / 3600)  # Convert to hours
-                    
-                    completed_shipments.append(shipment)
+                    # Only complete shipments that have finished unloading
+                    if shipment.get('unloading_completed', False):
+                        delivery_time = current_time - shipment['arrival_time']
+                        shipment['delivery_time'] = delivery_time
+                        shipment['completion_time'] = current_time
+                        
+                        # Record in monitors
+                        shipment_delivery_time_monitor.tally(delivery_time / 3600)  # Convert to hours
+                        
+                        completed_shipments.append(shipment)
                 
                 # Move completed shipments
                 shipment_tracker['completed_shipments'].extend(completed_shipments)
-                shipment_tracker['active_shipments'].clear()
+                # Remove completed shipments from active list
+                shipment_tracker['active_shipments'] = [
+                    s for s in shipment_tracker['active_shipments'] 
+                    if s not in completed_shipments
+                ]
                 
             # Check if queue has containers (not empty)
             elif current_queue_length > 0:
@@ -455,6 +465,27 @@ class ShipmentTracker(sim.Component):
             
             self.last_check_time = current_time
             yield self.hold(30)  # Check every 30 seconds
+
+class AGVActivator(sim.Component):
+    def process(self):
+        while True:
+            # Only activate AGVs if there are containers waiting
+            if len(ContainerQueue) > 0:
+                # Reactivate idle AGVs that are ready to work
+                agvs_to_activate = []
+                for agv in list(AGVQueue):
+                    if (agv.battery is not None and 
+                        not agv.waiting_for_battery and 
+                        agv.battery.soc() > SOC_MIN):
+                        agvs_to_activate.append(agv)
+                
+                # Activate found AGVs
+                for agv in agvs_to_activate:
+                    AGVQueue.remove(agv)
+                    agv.activate()
+            
+            # Check every 30 seconds (adjust frequency as needed)
+            yield self.hold(30)
 
 # create AGVs and batteries list
 agvs = []
@@ -477,6 +508,7 @@ ChargingStation().activate()
 QueueLengthMonitor().activate()
 HourlyQueueMonitor().activate()
 ShipmentTracker().activate()
+AGVActivator().activate()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
@@ -536,6 +568,7 @@ def print_shipment_statistics():
         
     if shipment_delivery_time_monitor.number_of_entries() > 0:
         print(f"Average Shipment Delivery Time: {shipment_delivery_time_monitor.mean():.2f} hours")
+        print(f"Average Unloading time: {shipment_unloading_time_monitor.mean()/60:.2f} minutes")
         delivery_times = shipment_delivery_time_monitor.x()  # Call the method to get the list
         print(f"Max Shipment Delivery Time: {max(delivery_times):.2f} hours")
         print(f"Min Shipment Delivery Time: {min(delivery_times):.2f} hours")
