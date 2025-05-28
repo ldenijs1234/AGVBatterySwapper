@@ -3,6 +3,7 @@ import random
 import sys
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 
 sim.yieldless(False)
 
@@ -56,7 +57,7 @@ IDLE_POWER_CONSUMPTION = 9  # kWh
 SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
-CRANE_CYCLE_TIME = random.normalvariate(20, 10)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
+CRANE_CYCLE_TIME = random.normalvariate(120, 60)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
 
 DEGRADATION_PROFILE = [
     ((0, 15), 0.55),    # 15% capacity loss at 1200 cycles
@@ -277,6 +278,7 @@ class AGV(sim.Component):
 
             # Travel to pickup location
             pickup_y = random.choice(CONTAINER_PICKUP_RANGE)
+
             pickup_point = (CONTAINER_PICKUP_X, pickup_y)
             yield from self.travel_to(pickup_point)
             yield self.hold(LOADING_TIME)
@@ -331,18 +333,26 @@ class ContainerGenerator(sim.Component):
             # Record shipment size
             shipment_size_monitor.tally(num_containers)
 
-            # Add containers to queue with normal distribution timing
-            for i in range(num_containers):
+            # How many full 6-container cycles are needed?
+            cycles = math.ceil(num_containers / 6)  # 6 containers per cycle
+
+            # Simulate the crane loading containers
+            for cycle in range(cycles):
                 # Generate cycle time with normal distribution
                 cycle_time = CRANE_CYCLE_TIME
                 
                 # Hold for the cycle time before adding the next container
-                if i > 0:  # No wait before first container
+                if cycle > 0:  # No wait before first container
                     yield self.hold(cycle_time)
-                
+
+                remaining = num_containers - cycle * 6
+                to_unload = min(remaining, 6)  # Unload up to 6 containers per cycle
+
                 # Add the container to the queue
-                ContainerQueue.add(Container())
+                for _ in range(to_unload):
+                    ContainerQueue.add(Container())
                 container_queue_monitor.tally(len(ContainerQueue))
+
 
             # Reactivate idle AGVs that have batteries and are not waiting for battery swap
             agvs_to_reactivate = []
