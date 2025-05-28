@@ -37,7 +37,7 @@ class TextLoadingBar:
 env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
-USE_SWAPPING = True
+USE_SWAPPING = False
 USE_SOC_WINDOW = True
 TEST_MODE = True
 
@@ -238,7 +238,7 @@ class AGV(sim.Component):
                     # Send old battery to charging
                     ChargingQueue.add(self.battery)
                     self.battery = None
-                    self.swap_count += 1 if not USE_SWAPPING else 0
+                    self.swap_count += 1 if USE_SWAPPING else 0
 
                 # Wait for a new battery
                 self.waiting_for_battery = True
@@ -515,19 +515,19 @@ env.run(till=SIM_TIME)
 
 loading_bar.complete()
 
-# print("\n=== AGV STATISTICS ===")
-# for agv in agvs:
-#     print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
-#     swap_monitor.tally(agv.swap_count)
-#     container_monitor.tally(agv.containers_handled)
-#     distance_monitor.tally(agv.distance_traveled)
+print("\n=== AGV STATISTICS ===")
+for agv in agvs:
+    print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
+    swap_monitor.tally(agv.swap_count)
+    container_monitor.tally(agv.containers_handled)
+    distance_monitor.tally(agv.distance_traveled)
 
-# print("\n=== BATTERY STATISTICS ===")
-# for i, battery in enumerate(batteries):
-#     print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
-#           f"Usage count: {battery.usage_count}, "
-#           f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
-#           f"Current SOC: {battery.soc():.1f}%")
+print("\n=== BATTERY STATISTICS ===")
+for i, battery in enumerate(batteries):
+    print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
+          f"Usage count: {battery.usage_count}, "
+          f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
+          f"Current SOC: {battery.soc():.1f}%")
 
 print("\n=== AVERAGE BATTERY STATS ===")
 print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
@@ -568,10 +568,26 @@ def print_shipment_statistics():
         
     if shipment_delivery_time_monitor.number_of_entries() > 0:
         print(f"Average Shipment Delivery Time: {shipment_delivery_time_monitor.mean():.2f} hours")
-        print(f"Average Unloading time: {shipment_unloading_time_monitor.mean()/60:.2f} minutes")
         delivery_times = shipment_delivery_time_monitor.x()  # Call the method to get the list
         print(f"Max Shipment Delivery Time: {max(delivery_times):.2f} hours")
         print(f"Min Shipment Delivery Time: {min(delivery_times):.2f} hours")
+    """Analyze shipment patterns and overlaps"""
+    if not shipment_tracker['completed_shipments']:
+        print("No completed shipments to analyze.")
+        return
+    
+    completed = shipment_tracker['completed_shipments']
+     
+    # Calculate overlaps
+    overlapping_shipments = 0
+    for i, shipment in enumerate(completed):
+        # Check if this shipment overlapped with the next one
+        if i < len(completed) - 1:
+            next_shipment = completed[i + 1]
+            if next_shipment['arrival_time'] < shipment['completion_time']:
+                overlapping_shipments += 1
+    
+    print(f"Shipments with Overlaps: {overlapping_shipments} out of {len(completed)} ({overlapping_shipments/len(completed)*100:.1f}%)")
         
     # Additional detailed statistics
     if shipment_tracker['completed_shipments']:
@@ -592,44 +608,6 @@ def print_shipment_statistics():
             delivery_hours = shipment['delivery_time'] / 3600
             print(f"Shipment {shipment['id']}: {shipment['size']} containers, "
                   f"{delivery_hours:.2f} hours delivery time")
-
-def analyze_shipment_patterns():
-    """Analyze shipment patterns and overlaps"""
-    if not shipment_tracker['completed_shipments']:
-        print("No completed shipments to analyze.")
-        return
-    
-    completed = shipment_tracker['completed_shipments']
-    
-    print("\n=== SHIPMENT PATTERN ANALYSIS ===")
-    
-    # Calculate overlaps
-    overlapping_shipments = 0
-    for i, shipment in enumerate(completed):
-        # Check if this shipment overlapped with the next one
-        if i < len(completed) - 1:
-            next_shipment = completed[i + 1]
-            if next_shipment['arrival_time'] < shipment['completion_time']:
-                overlapping_shipments += 1
-    
-    print(f"Shipments with Overlaps: {overlapping_shipments} out of {len(completed)} ({overlapping_shipments/len(completed)*100:.1f}%)")
-    
-    # Delivery time distribution
-    delivery_times_hours = [s['delivery_time'] / 3600 for s in completed]
-    delivery_times_hours.sort()
-    
-    if delivery_times_hours:
-        median_idx = len(delivery_times_hours) // 2
-        median_time = delivery_times_hours[median_idx]
-        q1_idx = len(delivery_times_hours) // 4
-        q3_idx = 3 * len(delivery_times_hours) // 4
-        
-        print(f"Delivery Time Distribution (hours):")
-        print(f"  Min: {min(delivery_times_hours):.2f}")
-        print(f"  Q1 (25%): {delivery_times_hours[q1_idx]:.2f}")
-        print(f"  Median: {median_time:.2f}")
-        print(f"  Q3 (75%): {delivery_times_hours[q3_idx]:.2f}")
-        print(f"  Max: {max(delivery_times_hours):.2f}")
 
 def plot_queue_lengths():
     # Convert time to days for better readability
@@ -663,7 +641,6 @@ def plot_queue_lengths():
 # === CALL ALL OUTPUT FUNCTIONS IN ORDER ===
 print_results()
 print_shipment_statistics()
-analyze_shipment_patterns()
 
 input("\nPress Enter to view queue plots...")
 
