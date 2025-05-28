@@ -515,19 +515,19 @@ env.run(till=SIM_TIME)
 
 loading_bar.complete()
 
-print("\n=== AGV STATISTICS ===")
+# print("\n=== AGV STATISTICS ===")
 for agv in agvs:
-    print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
+    # print(f"{agv.name()} - Battery swaps: {agv.swap_count}, Containers handled: {agv.containers_handled}, Distance traveled: {agv.distance_traveled/1000:.2f} km")
     swap_monitor.tally(agv.swap_count)
     container_monitor.tally(agv.containers_handled)
     distance_monitor.tally(agv.distance_traveled)
 
-print("\n=== BATTERY STATISTICS ===")
-for i, battery in enumerate(batteries):
-    print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
-          f"Usage count: {battery.usage_count}, "
-          f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
-          f"Current SOC: {battery.soc():.1f}%")
+# print("\n=== BATTERY STATISTICS ===")
+# for i, battery in enumerate(batteries):
+#     print(f"{battery.name()} - Charge cycles: {battery.charge_cycles}, "
+#           f"Usage count: {battery.usage_count}, "
+#           f"Total energy delivered: {battery.total_energy_delivered:.2f} kWh, "
+#           f"Current SOC: {battery.soc():.1f}%")
 
 print("\n=== AVERAGE BATTERY STATS ===")
 print(f"Avg charge cycles: {sum(b.charge_cycles for b in batteries)/len(batteries):.1f}")
