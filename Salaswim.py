@@ -39,7 +39,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = False
+TEST_MODE = True
 
 # === ENV SETUP ===
 NUM_AGVS = 84
@@ -88,6 +88,7 @@ container_queue_monitor = sim.Monitor("Container Queue Length")
 AGV_queue_monitor = sim.Monitor("AGV Queue Length")
 charging_time_monitor = sim.Monitor("Battery Charging Time")
 container_delivery_time_monitor = sim.Monitor("Container Delivery Time")
+agv_active_time_monitor = sim.Monitor("AGV Active Time")
 agv_idle_time_monitor = sim.Monitor("AGV Idle Time")
 
 swap_monitor = sim.Monitor("AGV Swaps")
@@ -206,6 +207,7 @@ class AGV(sim.Component):
         self.swap_count = 0
         self.containers_handled = 0
         self.waiting_for_battery = False  # Track if AGV is waiting for battery
+        self.last_active_start = self.env.now()
 
     def calculate_distance(self, from_loc, to_loc):
         """Calculate Euclidean distance between two points"""
@@ -259,6 +261,8 @@ class AGV(sim.Component):
             # Now we have a good battery, look for containers
             if len(ContainerQueue) == 0:
                 # No containers available, wait
+                active_duration = self.env.now() - self.last_active_start
+                agv_active_time_monitor.tally(active_duration)
                 wait_start = self.env.now()
                 AGVQueue.add(self)
                 yield self.passivate()
@@ -272,6 +276,7 @@ class AGV(sim.Component):
                 battery_soc_monitor.tally(self.battery.soc())
                 
                 # After waiting, check battery again
+                self.last_active_start = self.env.now()
                 continue
 
             # Get container and deliver
@@ -570,6 +575,7 @@ def print_results():
     print(f"Battery SOH - avg: {battery_soh_monitor.mean():.2f} %")
     print(f"Charging Time - avg: {charging_time_monitor.mean()/60:.2f} min")
     print(f"AGV Idle Time - avg: {agv_idle_time_monitor.mean()/60:.2f} min")
+    print(f"AGV Active Time - avg: {agv_active_time_monitor.mean()/60:.2f} min")
     print(f"Container Delivery Time - avg: {container_delivery_time_monitor.mean():.2f} min")
     print(f"Battery Queue - avg length: {battery_queue_monitor.mean():.2f}")
     print(f"Container Queue - avg length: {container_queue_monitor.mean():.2f}")
