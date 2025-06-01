@@ -45,7 +45,7 @@ env = sim.Environment(trace=False, random_seed=42)
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
 USE_SOC_WINDOW = True
-TEST_MODE = False
+TEST_MODE = True
 
 # === ENV SETUP ===
 NUM_AGVS = 84
@@ -147,7 +147,7 @@ class Battery(sim.Component):
         self.soc_history = []  # Track SOC at each charge cycle
         
         # Track cycles in each SOC range for degradation calculation
-        self.cycles_in_range = {f"{low}-{high}%": 0 
+        self.cycles_in_range = {f"{low}-{high}%": 0
                               for (low, high), _ in DEGRADATION_PROFILE}
     
     def soc(self):
@@ -577,6 +577,10 @@ def verifications():
     print(f"{'AGV':<8} {'Idle (h)':<10} {'Run (h)':<10} {'Swap (h)':<10} {'Total (h)':<10} "
           f"{'Idle %':<8} {'Run %':<8} {'Swap %':<8} {'Dist (km)':<10} {'Swaps':<6} {'Cont':<6}")
     for a in agv_activity:
+        total_state_time = a['idle_time'] + a['running_time'] + a['swapping_time']
+        diff = abs(total_state_time - a['total_time'])
+        print(
+            f"{a['agv_id']}: State sum = {total_state_time:.2f}s, Reported total = {a['total_time']:.2f}s, Diff = {diff:.6f}s")
         print(f"{a['agv_id']:<8} {a['idle_time']/3600:<10.2f} {a['running_time']/3600:<10.2f} {a['swapping_time']/3600:<10.2f} "
               f"{a['total_time']/3600:<10.2f} {a['idle_percentage']:<8.1f} {a['running_percentage']:<8.1f} {a['swapping_percentage']:<8.1f} "
               f"{a['distance']/1000:<10.2f} {a['swaps']:<6} {a['containers']:<6}")
