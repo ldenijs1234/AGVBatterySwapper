@@ -54,13 +54,13 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 30 * 24 * 60 * 60 # 7 day or 30 days (heb een jaar gedaan)
+SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 365 * 24 * 60 * 60 # 7 day or 30 days
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 CRANE_CYCLE_TIME = random.normalvariate(120, 60)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
 
 DEGRADATION_PROFILE = [
-    ((0, 15), 0.55),    # 15% capacity loss at 1200 cycles
+    ((0, 15), 0.15),    # 15% capacity loss at 1200 cycles
     ((15, 25), 0.125),  # 12.5% capacity loss
     ((25, 35), 0.09),   # 9% capacity loss
     ((35, 45), 0.06),   # 6% capacity loss
