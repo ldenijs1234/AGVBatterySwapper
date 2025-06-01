@@ -622,6 +622,7 @@ def print_shipment_statistics():
         avg_size = total_containers / len(completed)
         avg_delivery_hours = sum(s['delivery_time'] for s in completed) / len(completed) / 3600
             
+        print(f"Total Containers Received: {received}")
         print(f"Total Containers Delivered in Completed Shipments: {total_containers}")
         print(f"Average Containers per Completed Shipment: {avg_size:.2f}")
         print(f"Average Delivery Time for Completed Shipments: {avg_delivery_hours:.2f} hours")
