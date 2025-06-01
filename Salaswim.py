@@ -37,7 +37,7 @@ class TextLoadingBar:
 env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
-USE_SWAPPING = False
+USE_SWAPPING = True
 USE_SOC_WINDOW = True
 TEST_MODE = False
 
@@ -116,7 +116,8 @@ shipment_tracker = {
     'active_shipments': [],  # List of active shipment dictionaries
     'completed_shipments': [],  # List of completed shipments
     'total_shipments': 0,
-    'last_queue_empty_time': 0
+    'last_queue_empty_time': 0,
+    'total_containers_received': 0
 }
 
 # === QUEUES ===
@@ -319,24 +320,16 @@ class ContainerGenerator(sim.Component):
             arrival_time = self.env.now()
             
             # Generate deadline based on shipment size
-            MEAN_SHIPMENT_SIZE = 7064  # Your reference point
-            MIN_DEADLINE = 1400  # minutes (for smallest shipments)
-            MAX_DEADLINE = 7000  # minutes (for largest shipments)
-            MEAN_DEADLINE = 3000  # minutes (for mean shipment size)
+            # Base deadline: normal distribution with mean 3000 minutes for mean shipment size (7064)
+            # Scale the deadline proportionally to shipment size
+            size_ratio = num_containers / 7064  # Ratio of this shipment to mean size
+            base_deadline_minutes = random.normalvariate(3000, 1400)  # Mean 3000, range roughly 1400-4600
+            base_deadline_minutes = max(500, min(7000, base_deadline_minutes))  # Clamp to 500-7000 range
             
-            size_ratio = num_containers / MEAN_SHIPMENT_SIZE
+            # Scale deadline based on shipment size
+            deadline_minutes = base_deadline_minutes * size_ratio
+            deadline_minutes = max(100, deadline_minutes)  # Minimum 100 minutes for any shipment
             
-            # Linear scaling for small shipments (<7064 containers)
-            if num_containers <= MEAN_SHIPMENT_SIZE:
-                deadline_minutes = MIN_DEADLINE + (MEAN_DEADLINE - MIN_DEADLINE) * (size_ratio - (500/7064))
-            # Linear scaling for large shipments (>7064 containers)
-            else:
-                deadline_minutes = MEAN_DEADLINE + (MAX_DEADLINE - MEAN_DEADLINE) * ((size_ratio - 1) / ((24000/7064) - 1))
-            
-            # Apply normal distribution variation around the calculated deadline
-            deadline_minutes = random.normalvariate(deadline_minutes, 300)  # 300 min standard deviation
-            deadline_minutes = max(MIN_DEADLINE, min(MAX_DEADLINE, deadline_minutes))
-                       
             # Create shipment record
             shipment = {
                 'id': shipment_tracker['total_shipments'],
@@ -349,7 +342,7 @@ class ContainerGenerator(sim.Component):
                 'delivery_time': None,
                 'completion_time': None,
                 'deadline_minutes': deadline_minutes,
-                'deadline_time': arrival_time + (deadline_minutes * 60),
+                'deadline_time': arrival_time + (deadline_minutes * 60),  # Convert to seconds
                 'is_on_time': None,  # Will be determined when completed
                 'is_overdue': None
             }
@@ -357,7 +350,7 @@ class ContainerGenerator(sim.Component):
             # Add to tracking
             shipment_tracker['active_shipments'].append(shipment)
             shipment_tracker['total_shipments'] += 1
-            
+            shipment_tracker['total_containers_received'] += num_containers
             # Record shipment size
             shipment_size_monitor.tally(num_containers)
 
@@ -622,6 +615,7 @@ def print_shipment_statistics():
     # Additional detailed statistics
     if shipment_tracker['completed_shipments']:
         print("\n=== DETAILED SHIPMENT ANALYSIS ===")
+        received = shipment_tracker['total_containers_received']
         completed = shipment_tracker['completed_shipments']
             
         total_containers = sum(s['size'] for s in completed)
@@ -638,6 +632,7 @@ def print_shipment_statistics():
             status = "ON TIME" if shipment['is_on_time'] else f"OVERDUE (delay: {(shipment['completion_time'] - shipment['deadline_time']) / 60:.1f} min)"
             print(
                 f"Shipment {shipment['id']}: {shipment['size']} containers, "
+                f"{shipment['unloading_duration'] / 60:.1f} min unloading, "
                 f"{(shipment['delivery_time'] / 3600):.1f} hours delivery, "
                 f"deadline: {(shipment['deadline_minutes'] / 60):.1f} hours, {status}"
             )
