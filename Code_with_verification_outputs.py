@@ -44,7 +44,7 @@ env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
 USE_SWAPPING = True
-USE_SOC_WINDOW = True
+USE_SOC_WINDOW = False
 TEST_MODE = True
 
 # === ENV SETUP ===
@@ -60,8 +60,8 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 365 * 24 * 60 * 60 # 7 day or 30 days
-SOC_MIN = 20 if USE_SOC_WINDOW else 5
+SIM_TIME = 30 * 24 * 60 * 60 if TEST_MODE else 1 * 365 * 24 * 60 * 60 # 7 day or 30 days
+SOC_MIN = 25 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 CRANE_CYCLE_TIME = random.normalvariate(120, 60)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
 
@@ -74,8 +74,15 @@ DEGRADATION_PROFILE = [
     ((55, 65), 0.08),   # 8% capacity loss
     ((65, 75), 0.09),   # 9% capacity loss
     ((75, 85), 0.09),   # 9% capacity loss
-    ((85, 100), 0.55),  # 9.5% capacity loss
+    ((85, 100), 0.095),  # 9.5% capacity loss
 ]
+
+DEGRADATION_BASE_RATE = 0.0000865  # Base degradation per cycle (0.015%)
+SOC_STRESS_FACTOR = {
+    (0, 20): 2.0,    # High stress below 20%
+    (20, 80): 1.0,   # Optimal range
+    (80, 100): 6.5   # High stress above 80%
+}
 # Coordinates in meters
 SWAPPING_STATION = (0, 0)
 CONTAINER_PICKUP_X = 340
@@ -140,44 +147,56 @@ class Battery(sim.Component):
         self.initial_capacity = BATTERY_CAPACITY
         self.capacity = self.initial_capacity
         self.energy = soc / 100 * self.capacity
-        self.soh = 100  # State of Health (percentage of initial capacity)
-        self.charge_cycles = 0
+        self.soh = 100  # State of Health
+        self.cycle_count = 0
         self.usage_count = 0
+        self.cumulative_stress = 0
         self.total_energy_delivered = 0
-        self.soc_history = []  # Track SOC at each charge cycle
         
-        # Track cycles in each SOC range for degradation calculation
-        self.cycles_in_range = {f"{low}-{high}%": 0
-                              for (low, high), _ in DEGRADATION_PROFILE}
-    
     def soc(self):
         return (self.energy / self.capacity) * 100
     
     def calculate_degradation(self, start_soc, end_soc):
-        """Calculate degradation based on SOC range used during charging"""
-        # Find which ranges this charge cycle passed through
-        ranges_used = []
-        for (low, high), _ in DEGRADATION_PROFILE:
-            if start_soc <= high and end_soc >= low:
-                ranges_used.append((low, high))
+        """Improved degradation model based on:
+        - Cycle count
+        - SOC stress factors
+        - Depth of Discharge (DoD)
+        - Temperature effects (simplified)"""
         
-        # Apply degradation proportionally for each range
-        for (low, high) in ranges_used:
-            range_key = f"{low}-{high}%"
-            self.cycles_in_range[range_key] += 1
-            
-            # Find the degradation rate for this range
-            degradation_rate = next(d for (l,h), d in DEGRADATION_PROFILE 
-                                  if l == low and h == high)
-            
-            # Apply degradation (per cycle, scaled to 1200 cycles)
-            capacity_loss = (degradation_rate / 1200) * self.initial_capacity
-            self.capacity -= capacity_loss
-            self.capacity = max(self.capacity, 0.1 * self.initial_capacity)  # Never below 10%
-            
-        # Update SOH
+        self.cycle_count += 1
+        
+        # 1. Calculate average SOC stress for this cycle
+        avg_soc = (start_soc + end_soc) / 2
+        stress_factor = 1.0
+        for (low, high), factor in SOC_STRESS_FACTOR.items():
+            if low <= avg_soc < high:
+                stress_factor = factor
+                break
+        
+        # 2. Depth of Discharge impact
+        dod = abs(end_soc - start_soc) / 100
+        dod_impact = 0.5 + (dod * 0.8)  # 0.5-1.3 multiplier
+        
+        # 3. Simplified temperature effect (assuming ~25°C nominal)
+        temp_effect = 1.0  # Could vary based on environment
+        
+        # 4. Calculate capacity loss
+        base_degradation = DEGRADATION_BASE_RATE
+        cycle_degradation = (base_degradation * 
+                           stress_factor * 
+                           dod_impact * 
+                           temp_effect)
+        
+        # 5. Apply capacity loss with minimum 10% limit
+        self.capacity -= cycle_degradation * self.initial_capacity
+        self.capacity = max(self.capacity, 0.1 * self.initial_capacity)
+        
+        # 6. Update SOH
         self.soh = (self.capacity / self.initial_capacity) * 100
         battery_soh_monitor.tally(self.soh)
+        
+        # Record stress for predictive maintenance
+        self.cumulative_stress += stress_factor * dod
     
     def process(self):
         while True:
@@ -188,7 +207,7 @@ class Battery(sim.Component):
             start_charge = self.env.now()  # Track when charging starts
             
             # Charging process
-            self.charge_cycles += 1
+            self.cycle_count += 1
             energy_needed = (SOC_MAX/100 * self.capacity) - self.energy
             if energy_needed > 0:
                 charging_time = (energy_needed / CHARGING_RATE) * 3600
@@ -201,7 +220,7 @@ class Battery(sim.Component):
             # Record statistics
             charging_time_monitor.tally(self.env.now() - start_charge)
             battery_soc_monitor.tally(self.soc())
-            battery_charge_cycles_monitor.tally(self.charge_cycles)
+            battery_charge_cycles_monitor.tally(self.cycle_count)
             
             BatteryQueue.add(self)
 
