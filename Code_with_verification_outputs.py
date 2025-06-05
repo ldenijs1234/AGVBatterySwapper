@@ -66,15 +66,15 @@ SOC_MAX = 80 if USE_SOC_WINDOW else 100
 CRANE_CYCLE_TIME = random.normalvariate(120, 60)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
 
 DEGRADATION_PROFILE = [
-    ((0, 15), 0.45),    # 15% capacity loss at 1200 cycles
-    ((15, 25), 0.125),  # 12.5% capacity loss
+    ((0, 15), 0.21),    # 21% capacity loss at 1200 cycles
+    ((15, 25), 0.09),  # 9% capacity loss
     ((25, 35), 0.09),   # 9% capacity loss
     ((35, 45), 0.06),   # 6% capacity loss
     ((45, 55), 0.05),   # 5% capacity loss
     ((55, 65), 0.08),   # 8% capacity loss
     ((65, 75), 0.09),   # 9% capacity loss
     ((75, 85), 0.09),   # 9% capacity loss
-    ((85, 100), 0.45),  # 9.5% capacity loss
+    ((85, 100), 0.21),  # 21% capacity loss
 ]
 # Coordinates in meters
 SWAPPING_STATION = (0, 0)
