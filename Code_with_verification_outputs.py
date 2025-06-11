@@ -43,8 +43,8 @@ class TextLoadingBar:
 env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
-USE_SWAPPING = False
-USE_SOC_WINDOW = False
+USE_SWAPPING = True
+USE_SOC_WINDOW = True
 TEST_MODE = False
 
 # === ENV SETUP ===
@@ -60,7 +60,7 @@ LOADING_TIME = 18 # seconds
 UNLOADING_TIME = 18 # seconds
 POWER_CONSUMPTION = 17 / 25  # kWh/kmh
 IDLE_POWER_CONSUMPTION = 9  # kWh
-SIM_TIME = 7 * 24 * 60 * 60 if TEST_MODE else 1 * 365 * 24 * 60 * 60 # 7 day or 30 days
+SIM_TIME = 30 * 24 * 60 * 60 if TEST_MODE else 3.5 * 365 * 24 * 60 * 60 # 7 day or 30 days
 SOC_MIN = 20 if USE_SOC_WINDOW else 5
 SOC_MAX = 80 if USE_SOC_WINDOW else 100
 CRANE_CYCLE_TIME = random.normalvariate(120, 60)  # 60 to 180 seconds / max of 6 cranes per ship (time to load/unload a container) .normalvariate(mean,stddev)
@@ -514,10 +514,28 @@ class AGVActivator(sim.Component):
             
             yield self.hold(30)
 
+class SOHMonitor(sim.Component):
+    def setup(self):
+        self.soh_dropped_below_70 = False
+        self.time_below_70 = None
+    
+    def process(self):
+        while True:
+            # Calculate current average SOH
+            current_avg_soh = battery_soh_monitor.mean()
+            
+            # Check if average SOH dropped below 70%
+            if not self.soh_dropped_below_70 and current_avg_soh < 99:
+                self.soh_dropped_below_70 = True
+                self.time_below_70 = self.env.now()
+                print(f"\nAverage SOH dropped below 70% at simulation time: {self.time_below_70/(3600*24):.2f} days")
+                
+            yield self.hold(3600)  # Check every hour
+
 # === INITIALIZATION ===
 agvs = []
 batteries = []
-
+ 
 for _ in range(NUM_BATTERIES):
     battery = Battery(soc=100)
     batteries.append(battery)
@@ -535,6 +553,8 @@ QueueLengthMonitor().activate()
 HourlyQueueMonitor().activate()
 ShipmentTracker().activate()
 AGVActivator().activate()
+soh_monitor = SOHMonitor()
+soh_monitor.activate()
 
 # === RUN SIMULATION ===
 env.run(till=SIM_TIME)
@@ -688,6 +708,16 @@ def print_delivery_performance():
     print(f"Shipments Delivered OVERDUE: {len(overdue)} ({overdue_pct:.1f}%)")
     print(f"Average Delay for Overdue Shipments: {avg_delay:.1f} minutes")
 
+def print_soh_results(soh_monitor):
+    if soh_monitor.time_below_70 is not None:
+        print(f"\n=== BATTERY DEGRADATION ===")
+        print(f"Average SOH first dropped below 70% at: {soh_monitor.time_below_70/3600:.2f} hours")
+        print(f"Which was after: {soh_monitor.time_below_70/(3600*24):.2f} days")
+        print(f"Or: {soh_monitor.time_below_70/(3600*24*365):.2f} years")
+    else:
+        print("\n=== BATTERY DEGRADATION ===")
+        print("Average SOH never dropped below 70% during simulation")
+
 def plot_queue_lengths():
     time_days = np.array(hourly_queue_data['time']) / 24
     
@@ -719,6 +749,7 @@ def plot_queue_lengths():
 print_results()
 print_shipment_statistics()
 print_delivery_performance()
+print_soh_results(soh_monitor)
 agv_activity = verifications()
 
 input("\nPress Enter to view queue plots...")
