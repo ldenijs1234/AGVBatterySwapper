@@ -43,8 +43,8 @@ class TextLoadingBar:
 env = sim.Environment(trace=False, random_seed=42)
 
 # === CONFIGURATION FLAGS ===
-USE_SWAPPING = True
-USE_SOC_WINDOW = True
+USE_SWAPPING = False
+USE_SOC_WINDOW = False
 TEST_MODE = False
 
 # === ENV SETUP ===
